@@ -383,11 +383,14 @@ async function main() {
   step(4, "The settle fails while the payment could still land, and the buyer signs again anyway");
   const before4 = srv.runs.count;
   crash.failNext = true; // nothing moves; the first payment stays valid and could still land
-  const h4a = await b.sign(srv.url, { question: "order" }, "order-1001");
+  // A new order id per run: the journal outlives runs, and on testnet the seller
+  // wallet is fixed, so a reused id would find last run's finished purchase.
+  const orderId = `order-${Date.now().toString(36)}`;
+  const h4a = await b.sign(srv.url, { question: "order" }, orderId);
   const r4a = await b.post(srv.url, { question: "order" }, h4a);
   check(r4a.status === 409, `the buyer was told ${await toldOf(r4a)}: retry this same payment, don't sign a new one`, `expected 409, got ${r4a.status}`);
   note("Without latch.http() the SDK answers 402 here, which invites a second signature.");
-  const h4b = await b.sign(srv.url, { question: "order" }, "order-1001");
+  const h4b = await b.sign(srv.url, { question: "order" }, orderId);
   const r4b = await b.post(srv.url, { question: "order" }, h4b);
   check(r4b.status === 409, "a buyer who signs again anyway is refused, so the second signature can never be charged", `expected a refusal, got ${r4b.status} ${(await toldOf(r4b)) ?? ""}`);
   note("Both payments carry an identifier derived from the order id (purchasePaymentId).");
