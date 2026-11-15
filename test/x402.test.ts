@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import { PGlite } from "@electric-sql/pglite";
-import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
+import { paymentMiddleware, paymentMiddlewareFromHTTPServer, x402HTTPResourceServer, x402ResourceServer } from "@x402/hono";
 import type { FacilitatorClient } from "@x402/core/server";
 import {
   decodePaymentRequiredHeader,
@@ -93,7 +93,7 @@ type Auth = { from: string; nonce: string; validBefore: string };
 const authOf = (payload: { payload: Record<string, unknown> }) => payload.payload.authorization as Auth;
 
 /** One server process: its own SDK objects, handler and bridge, over a journal and chain that outlive it. */
-function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, opts: { oracle?: boolean; flow?: string; pid?: boolean; token?: boolean; replayWindowMs?: number; schemes?: string[] } = {}) {
+function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, opts: { oracle?: boolean; flow?: string; pid?: boolean; token?: boolean; replayWindowMs?: number; schemes?: string[]; conform?: boolean } = {}) {
   const { journal, chain, clock } = shared;
   const calls = { verify: 0, settle: 0 };
   const control = { fault: "none" as Fault, handlerRuns: 0, hold: undefined as Promise<void> | undefined };
@@ -139,26 +139,28 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
   });
 
   const app = new Hono();
-  app.use(
-    paymentMiddleware(
-      {
-        "POST /buy": {
-          accepts: {
-            scheme: "exact",
-            price: "$0.01",
-            network: NETWORK,
-            payTo: SELLER,
-            ...(opts.flow ? { extra: { paymentFlow: opts.flow } } : {}),
-          },
-          description: "one answer",
-          extensions: {
-            ...(opts.token === false ? {} : latch.declare()),
-            ...(opts.pid ? { [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() } : {}),
-          },
-        },
+  const routes: Parameters<typeof paymentMiddleware>[0] = {
+    "POST /buy": {
+      accepts: {
+        scheme: "exact",
+        price: "$0.01",
+        network: NETWORK,
+        payTo: SELLER,
+        ...(opts.flow ? { extra: { paymentFlow: opts.flow } } : {}),
       },
-      server,
-    ),
+      description: "one answer",
+      extensions: {
+        ...(opts.token === false ? {} : latch.declare()),
+        ...(opts.pid ? { [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() } : {}),
+      },
+    },
+  };
+  // `conform`: the server wrapped by latch.http(), which answers an in-flight
+  // payment 409 as the x402 recovery spec requires. Otherwise the stock wiring.
+  app.use(
+    opts.conform
+      ? paymentMiddlewareFromHTTPServer(latch.http(new x402HTTPResourceServer(server, routes)))
+      : paymentMiddleware(routes, server),
   );
   app.post("/buy", async (c) => {
     control.handlerRuns++;
@@ -466,6 +468,8 @@ test("x402: with no oracle, an unresolved settle that expires is stuck and alarm
   w.clock.advance(500_000);
   assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["stuck"]);
   assert.equal(w.alarms.at(-1)?.kind, "stuck");
+  // The purchase stays blocked: a retry is told the outcome is unknown, not that it is closed.
+  assert.equal(reasonOf(await post(w.app, { q: "a" }, header)), "payment_unresolved");
 });
 
 // ── crashes ───────────────────────────────────────────────────────────────
@@ -1075,4 +1079,152 @@ test("journalReport: a read-only page of where every payment ended, safe to open
   assert.equal(JSON.parse(embedded).title, hostile);
   assert.equal(JSON.parse(embedded).payments.length, 2);
   await db.close();
+});
+
+// ── latch.http(): the 409 the x402 recovery spec requires ─────────────────
+//
+// x402-foundation/x402#3848 §5.1(6)-(7) and control 9: a copy that loses the
+// claim, or a retry while a settle is unresolved, MUST NOT get a payment
+// challenge. A 402 invites a second signature; a 409 says "retry this one".
+
+type Conflict = { error: string; reason: string; retry: string; message: string };
+
+async function conflictOf(res: Response): Promise<Conflict> {
+  assert.equal(res.status, 409);
+  assert.equal(res.headers.get("payment-required"), null, "a 409 carries no payment challenge");
+  return (await res.json()) as Conflict;
+}
+
+test("x402 http(): three copies of one payment run the handler once; the losers get 409, never a 402", async () => {
+  const w = world({ conform: true });
+  const header = await sign(w, { q: "a" });
+  let release!: () => void;
+  w.control.hold = new Promise<void>((r) => (release = r));
+  const copies = [post(w.app, { q: "a" }, header), post(w.app, { q: "a" }, header), post(w.app, { q: "a" }, header)];
+  for (let i = 0; i < 20; i++) await tick();
+  release();
+  const results = await Promise.all(copies);
+
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409, 409]);
+  for (const r of results.filter((r) => r.status === 409)) {
+    assert.equal(r.headers.get("retry-after"), "2");
+    assert.deepEqual(
+      { ...(await conflictOf(r)), message: "" },
+      { error: "operation_in_flight", reason: "payment_in_progress", retry: "same_payment", message: "" },
+    );
+  }
+  assert.equal(w.control.handlerRuns, 1);
+  assert.equal(w.calls.settle, 1);
+  assert.equal(w.chain.size, 1);
+
+  // A copy that arrives afterwards collects the stored response.
+  const late = await post(w.app, { q: "a" }, header);
+  assert.equal(late.status, 200);
+  assert.equal(w.control.handlerRuns, 1);
+});
+
+test("x402 http(): a settle that fails while the payment could still land is answered 409, and retrying it finishes with one charge", async () => {
+  const w = world({ conform: true });
+  w.control.fault = "fails_clean";
+  const header = await sign(w, { q: "a" });
+
+  // Stock wiring answers this with the SDK's settlement-failure 402.
+  const first = await post(w.app, { q: "a" }, header);
+  assert.equal((await conflictOf(first)).error, "operation_in_flight");
+  assert.deepEqual(await states(w.journal, w), ["settling"]);
+
+  const early = await post(w.app, { q: "a" }, header);
+  assert.equal((await conflictOf(early)).reason, "payment_in_progress");
+
+  w.control.fault = "none";
+  w.clock.advance(STALE + 1);
+  const retry = await post(w.app, { q: "a" }, header);
+  assert.equal(retry.status, 200);
+  assert.deepEqual(await retry.json(), { answer: "answer to a", run: 1 });
+  assert.equal(w.chain.size, 1);
+  assert.equal(w.control.handlerRuns, 1);
+});
+
+test("x402 http(): a new signature for a purchase whose settle is unresolved gets 409 and is never charged", async () => {
+  const w = world({ conform: true, pid: true });
+  const id = "pay_0123456789abcdef0123";
+  w.control.fault = "fails_clean";
+  const first = await sign(w, { q: "a" }, id);
+  await conflictOf(await post(w.app, { q: "a" }, first));
+
+  w.control.fault = "none";
+  const second = await post(w.app, { q: "a" }, await sign(w, { q: "a" }, id));
+  assert.equal((await conflictOf(second)).retry, "same_payment");
+  assert.equal(w.chain.size, 0);
+  assert.equal(w.control.handlerRuns, 1);
+});
+
+test("x402 http(): a retry the facilitator rejects because the first settle landed gets 409, not a 402", async () => {
+  // No oracle, so only the sweep can learn the outcome once the payment expires.
+  const w = world({ conform: true, oracle: false });
+  w.control.fault = "lands_then_throws";
+  const header = await sign(w, { q: "a" });
+  await conflictOf(await post(w.app, { q: "a" }, header));
+
+  // Stale, so the retry resumes; the facilitator now says the nonce is used.
+  w.control.fault = "none";
+  w.clock.advance(STALE + 1);
+  const retry = await post(w.app, { q: "a" }, header);
+  assert.equal((await conflictOf(retry)).reason, "payment_in_progress");
+  assert.equal(w.chain.size, 1, "charged once, by the first settle");
+  assert.equal(w.control.handlerRuns, 1);
+});
+
+test("x402 http(): a stuck payment stays blocked with 409 payment_unresolved", async () => {
+  const w = world({ conform: true, oracle: false });
+  w.control.fault = "lands_then_throws";
+  const header = await sign(w, { q: "a" });
+  await conflictOf(await post(w.app, { q: "a" }, header));
+  w.clock.advance(500_000);
+  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["stuck"]);
+
+  const retry = await post(w.app, { q: "a" }, header);
+  assert.equal((await conflictOf(retry)).reason, "payment_unresolved");
+  assert.equal(retry.headers.get("retry-after"), null, "no promise of a quick answer: a human must look");
+  assert.equal(w.chain.size, 1);
+});
+
+test("x402 http(): every other answer is untouched", async () => {
+  const w = world({ conform: true });
+
+  // The price.
+  const unpaid = await post(w.app, { q: "a" });
+  assert.equal(unpaid.status, 402);
+  assert.ok(unpaid.headers.get("payment-required"));
+
+  // A normal purchase, then a replay with the same payment.
+  const header = await sign(w, { q: "a" });
+  assert.equal((await post(w.app, { q: "a" }, header)).status, 200);
+  assert.equal((await post(w.app, { q: "a" }, header)).status, 200);
+  assert.equal(reasonOf(await post(w.app, { q: "a" }, header, `${URL_}?other=1`)), "payment_already_used");
+
+  // A failed handler closes the payment with nothing charged: a 402 is honest there.
+  const failed = await sign(w, { fail: true });
+  assert.equal((await post(w.app, { fail: true }, failed)).status, 500);
+  const closed = await post(w.app, { fail: true }, failed);
+  assert.equal(closed.status, 402);
+  assert.equal(reasonOf(closed), "payment_closed");
+
+  // A settle that fails and provably can never land is void; a 402 is honest there too.
+  w.control.fault = "fails_clean";
+  const expiring = await sign(w, { q: "c" });
+  await conflictOf(await post(w.app, { q: "c" }, expiring));
+  w.clock.advance(400_000);
+  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["void"]);
+  assert.equal(w.chain.size, 1);
+});
+
+test("x402 http(): wrapping is idempotent and returns the same server", () => {
+  const server = new x402ResourceServer({} as FacilitatorClient);
+  const latch = latchX402(server, { journal: memoryJournal() });
+  const http = new x402HTTPResourceServer(server, {});
+  const wrapped = latch.http(http);
+  assert.equal(wrapped, http);
+  const once = http.processHTTPRequest;
+  assert.equal(latch.http(http).processHTTPRequest, once, "a second call does not wrap again");
 });

@@ -3,6 +3,23 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## Unreleased
+
+- **Added `latch.http(httpServer)`: a payment still in flight gets
+  `409 operation_in_flight`, not a 402.** The proposed x402 recovery extension
+  (x402-foundation/x402#3848, §5.1(6)–(7), control 9) says a copy that loses
+  the claim, or a retry while a settle is unresolved, MUST NOT get a payment
+  challenge: a 402 invites a second signature for one purchase. The SDK turns
+  every hook refusal into a full 402, and hooks cannot choose the status, so
+  `latch.http()` wraps the SDK's `x402HTTPResourceServer` and rewrites only the
+  refusals Latch made as "in flight". It also covers the SDK's own
+  settlement-failure 402 when the payment could still land. Pass the wrapped
+  server to `paymentMiddlewareFromHTTPServer`. Every other answer is unchanged.
+- **A `stuck` payment's retry is now refused as `payment_unresolved`** (409
+  with `latch.http()`), not `payment_closed`: its outcome is unknown, so the
+  purchase stays blocked and the caller is never invited to sign again.
+- The demo uses `latch.http()`; steps 3 and 4 now show the 409.
+
 ## 0.4.1 — 2026-11-14
 
 - **The report is now a dashboard.** Filters for time range, outcome and

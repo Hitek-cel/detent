@@ -12,10 +12,12 @@ import type {
   SettlementOracle,
   TransferMethod,
   X402HookRegistry,
+  X402HttpServer,
   X402Payload,
   X402Requirements,
   X402SettleResponse,
   X402VerifyContext,
+  X402VerifyResultContext,
 } from "./types.ts";
 
 /**
@@ -65,6 +67,40 @@ const PAYMENT_ID = /^[a-zA-Z0-9_-]{16,128}$/;
  */
 const EXTENSION = "latch";
 const TOKEN = /^[0-9a-f]{32}$/;
+
+/**
+ * Refusals whose honest HTTP answer is "retry this same payment", not a payment
+ * challenge. A 402 invites the client to sign a second authorization for one
+ * purchase: harmless while the first is still in flight, two charges once it
+ * lands. `latch.http()` answers these `409 operation_in_flight`, as the x402
+ * recovery spec requires (x402-foundation/x402#3848, §5.1(6) and (7)).
+ *
+ *   payment_in_progress  another copy of this payment holds the claim, or its
+ *                        settle has not resolved yet.
+ *   payment_unresolved   the settle's outcome is unknown and an operator has
+ *                        been alarmed (`stuck`). Signing again could pay twice.
+ */
+const IN_FLIGHT = new Set(["payment_in_progress", "payment_unresolved"]);
+
+function inFlightResponse(reason: string) {
+  return {
+    status: 409,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      ...(reason === "payment_in_progress" ? { "Retry-After": "2" } : {}),
+    },
+    body: {
+      error: "operation_in_flight",
+      reason,
+      retry: "same_payment",
+      message:
+        reason === "payment_unresolved"
+          ? "This payment's outcome is not known yet and the seller has been alerted. Do not sign a new payment; retry this same one later."
+          : "This payment is still being processed. Retry this same payment; do not sign a new one.",
+    },
+  };
+}
 
 /**
  * This flow's own transition table. It differs from the strict gate's on
@@ -145,6 +181,14 @@ export type X402Latch = {
   /** Finish or close one payment. Leaves a claim alone until it is stale. */
   recover(invoiceId: string): Promise<State>;
   chain(): Promise<SignedReceipt[]>;
+  /**
+   * Wraps the SDK's `x402HTTPResourceServer` so a payment Latch is still
+   * processing is answered `409 operation_in_flight` (retry the same payment)
+   * instead of a `402` payment challenge. Returns the same server; pass it to
+   * your framework's `paymentMiddlewareFromHTTPServer`. Without it everything
+   * else holds, but those refusals go out as `402 payment_in_progress`.
+   */
+  http<T extends X402HttpServer>(httpServer: T): T;
 };
 
 type Facts = {
@@ -306,6 +350,21 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
   // still a compare-and-set against the journal.
   const seen = new WeakMap<object, Seen>();
   const claims = new WeakMap<object, Claim>();
+
+  // Requests Latch refused as still in flight, for `http()` to answer 409.
+  // Keyed by per-request objects the SDK already threads through: the framework
+  // adapter at verify time, the payment payload at settle time.
+  const inFlightRequests = new WeakMap<object, string>();
+  const inFlightSettles = new WeakMap<object, string>();
+  const wrapped = new WeakSet<object>();
+  const adapterOf = (ctx: X402VerifyContext): object | undefined =>
+    record(record(record(ctx.transportContext)?.request)?.adapter);
+  function noteInFlight(ctx: X402VerifyContext, directive: unknown): void {
+    const d = record(directive);
+    const reason = d?.abort === true ? String(d.reason) : undefined;
+    const adapter = adapterOf(ctx);
+    if (reason && IN_FLIGHT.has(reason) && adapter) inFlightRequests.set(adapter, reason);
+  }
 
   const alarm = (a: X402Alarm): void => {
     try {
@@ -643,6 +702,11 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
         return undefined;
       }
 
+      case "stuck":
+        // The outcome is unknown, so the purchase stays blocked. Never invite
+        // a second signature for it: the first may have paid.
+        return abort("payment_unresolved", "This payment's outcome is unknown; an operator must check the chain");
+
       default:
         return own
           ? abort("payment_closed", `This payment is closed (${snap.state})`)
@@ -662,6 +726,12 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
   });
 
   server.onBeforeVerify(async (ctx) => {
+    const directive = await beforeVerify(ctx);
+    noteInFlight(ctx, directive);
+    return directive;
+  });
+
+  async function beforeVerify(ctx: X402VerifyContext): Promise<BeforeVerifyDirective> {
     if (!covers(ctx)) return;
     const payload = ctx.paymentPayload;
     try {
@@ -701,9 +771,15 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       alarm({ kind: "journal_error", error });
       return abort("latch_unavailable", "Payment journal unavailable; nothing was charged");
     }
+  }
+
+  server.onAfterVerify(async (ctx) => {
+    const directive = await afterVerify(ctx);
+    noteInFlight(ctx, directive);
+    return directive;
   });
 
-  server.onAfterVerify(async (ctx): Promise<AfterVerifyDirective> => {
+  async function afterVerify(ctx: X402VerifyResultContext): Promise<AfterVerifyDirective> {
     if (!covers(ctx)) return;
     const payload = ctx.paymentPayload;
     // The SDK only logs a throw from this hook and carries on, which would run
@@ -715,7 +791,9 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
         if (!ctx.result.isValid) {
           // A resumed payment the facilitator no longer accepts. Whether that
           // is because it landed is the sweep's question, not this request's.
+          // Until it answers, the caller must not be invited to sign again.
           claims.delete(payload);
+          if (held.mode === "resume") noteInFlight(ctx, abort("payment_in_progress", ""));
           return;
         }
         if (held.mode === "replay_pid") {
@@ -788,7 +866,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       alarm({ kind: "journal_error", error });
       return abort("latch_unavailable", "Payment journal unavailable; nothing was charged");
     }
-  });
+  }
 
   function capture(transportContext: unknown): StoredResponse {
     const t = record(transportContext);
@@ -858,7 +936,11 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
 
     const snap = await journal.get(held.invoiceId);
     const attempts = snap ? snap.entries.filter((e) => e.state === "settling").length : 0;
-    if (attempts >= maxSettleAttempts) throw new Error("latch402: settle attempts exhausted for this payment");
+    if (attempts >= maxSettleAttempts) {
+      // An earlier attempt may still land; the sweep finds out. Not a 402.
+      inFlightSettles.set(ctx.paymentPayload, "payment_in_progress");
+      throw new Error("latch402: settle attempts exhausted for this payment");
+    }
     held.seq = await advance(held.invoiceId, "settling", held.seq, "settling", {
       attempt: attempts + 1,
       reentry: true,
@@ -925,8 +1007,12 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
         claims.delete(payload);
         return;
       }
+      // Pending or unknown: the payment may still land, so the caller is told
+      // to retry this one, never invited to sign a second.
+      inFlightSettles.set(payload, "payment_in_progress");
       alarm({ kind: "settlement_unresolved", invoiceId: id, error: ctx.error });
     } catch (error) {
+      inFlightSettles.set(payload, "payment_in_progress");
       alarm({ kind: "journal_error", invoiceId: id, error });
     }
     return;
@@ -1006,6 +1092,40 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
 
     chain() {
       return journal.readChain();
+    },
+
+    http<T extends X402HttpServer>(httpServer: T): T {
+      if (wrapped.has(httpServer)) return httpServer;
+      wrapped.add(httpServer);
+      const processRequest = httpServer.processHTTPRequest;
+      const processSettlement = httpServer.processSettlement;
+
+      // Only a 402 Latch itself chose to refuse as in flight is rewritten.
+      // Every other answer, including the SDK's own 402s, passes untouched.
+      httpServer.processHTTPRequest = async function (this: unknown, context: unknown, ...rest: unknown[]) {
+        const result = await processRequest.call(this, context, ...rest);
+        const adapter = record(record(context)?.adapter);
+        const reason = adapter ? inFlightRequests.get(adapter) : undefined;
+        if (adapter) inFlightRequests.delete(adapter);
+        const r = record(result);
+        if (reason && r?.type === "payment-error" && record(r.response)?.status === 402) {
+          return { ...r, response: inFlightResponse(reason) };
+        }
+        return result;
+      };
+
+      // The settle-failure path builds its own 402. While the payment may
+      // still land, that answer would invite a second signature.
+      httpServer.processSettlement = async function (this: unknown, paymentPayload: unknown, ...rest: unknown[]) {
+        const result = await processSettlement.call(this, paymentPayload, ...rest);
+        const payload = record(paymentPayload);
+        const reason = payload ? inFlightSettles.get(payload) : undefined;
+        if (payload) inFlightSettles.delete(payload);
+        const r = record(result);
+        if (reason && r?.success === false) return { ...r, response: inFlightResponse(reason) };
+        return result;
+      };
+      return httpServer;
     },
   };
 }

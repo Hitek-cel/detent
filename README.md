@@ -31,6 +31,11 @@ lifecycle hooks.
 - **It has not handled real money.** Nothing here has run on mainnet or in
   production.
 - It covers one payment flow of one scheme. See [Limits](#limits).
+- It follows the in-flight rule of the proposed x402 recovery extension
+  ([x402-foundation/x402#3848](https://github.com/x402-foundation/x402/pull/3848),
+  §5.1(6)–(7), control 9). A payment that is still being processed is answered
+  `409 operation_in_flight` ("retry this same payment"), never a 402 that
+  invites a second signature. That needs `latch.http()`; see below.
 
 If you try it and it breaks, that report is worth more to this project than a
 star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
@@ -97,7 +102,7 @@ npm install latch402 @x402/extensions
 ```
 
 ```ts
-import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
+import { paymentMiddlewareFromHTTPServer, x402HTTPResourceServer, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { migrate, postgresJournal } from "latch402";
@@ -116,20 +121,19 @@ const latch = latchX402(server, {
   onAlarm: (alarm) => console.error("latch", alarm),
 });
 
-app.use(
-  paymentMiddleware(
-    {
-      "POST /answer": {
-        accepts: { scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: PAY_TO },
-        // latch: collect a paid response again after a lost reply or a crash.
-        // payment-identifier: a re-signed retry is never charged twice, if the client
-        // sends the same identifier for the same purchase (see Limits).
-        extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
-      },
-    },
-    server,
-  ),
-);
+const httpServer = new x402HTTPResourceServer(server, {
+  "POST /answer": {
+    accepts: { scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: PAY_TO },
+    // latch: collect a paid response again after a lost reply or a crash.
+    // payment-identifier: a re-signed retry is never charged twice, if the client
+    // sends the same identifier for the same purchase (see Limits).
+    extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
+  },
+});
+
+// latch.http(): a payment still being processed gets 409 operation_in_flight
+// ("retry this same payment") instead of a 402 payment challenge.
+app.use(paymentMiddlewareFromHTTPServer(latch.http(httpServer)));
 
 // Finishes payments whose process died. Run it in every instance; it is safe to race.
 setInterval(() => latch.sweep().catch(console.error), 30_000);
@@ -141,6 +145,24 @@ each wrap in about ten lines, so Latch has **no runtime dependencies** and you
 keep your own driver. The hooks live on `x402ResourceServer`, so the Express
 and Next adapters get the same behaviour; the tests here drive Hono.
 
+`latch.http()` wraps the SDK's `x402HTTPResourceServer` (the object every
+adapter's `paymentMiddlewareFromHTTPServer` takes) and returns the same
+server. It rewrites only the refusals Latch itself made as "still in flight";
+every other answer passes through untouched. The 409 looks like this:
+
+```http
+HTTP/1.1 409 Conflict
+Retry-After: 2
+
+{"error":"operation_in_flight","reason":"payment_in_progress","retry":"same_payment",
+ "message":"This payment is still being processed. Retry this same payment; do not sign a new one."}
+```
+
+A payment whose outcome is unknown and has been alarmed (`stuck`) gets the
+same 409 with `"reason":"payment_unresolved"` and no `Retry-After`. With the
+stock `paymentMiddleware(routes, server)` everything else here still holds,
+but those refusals go out as `402 payment_in_progress`.
+
 ## What changes
 
 Each row is a test in `test/x402.test.ts`, run against the real SDK packages.
@@ -148,7 +170,8 @@ The middle column is what those same tests observe with Latch switched off.
 
 | What happens | SDK alone | With Latch |
 |---|---|---|
-| Three copies of one payment arrive together | the handler runs three times | it runs once; the others get `402 payment_in_progress` |
+| Three copies of one payment arrive together | the handler runs three times | it runs once; the others get `409 operation_in_flight` |
+| A settle fails while the payment could still land | a 402, inviting a second signature | `409 operation_in_flight`: retry the same payment, which finishes it |
 | The settle moves money, then reports failure or times out | the caller is charged and gets a 402 | the chain is asked; the caller gets what it paid for |
 | The process dies after the money moved | charged, nothing delivered, no record | the next process finds it; a retry returns the stored response |
 | The process dies inside the handler | no record | the claim is closed; nothing was charged |
@@ -270,10 +293,11 @@ escrow contract.
 - **Replay needs the token.** The route must declare `latch.declare()` and the
   client must echo server extensions. The official client does.
 - **Declare `payment-identifier`, and have the client derive the identifier
-  from the purchase.** When a settle's outcome is still unknown, the caller
-  gets the SDK's 402, which invites a client to sign a new payment rather than
-  retry the same one. If the first payment then lands, that is two charges for
-  one purchase — each matched by a good the caller can collect, but still two.
+  from the purchase.** When a settle's outcome is still unknown, `latch.http()`
+  tells the caller to retry the same payment. Without it the caller gets the
+  SDK's 402, which invites a new signature, and a client may sign again anyway.
+  If the first payment then lands, that is two charges for one purchase — each
+  matched by a good the caller can collect, but still two.
   With `payment-identifier` declared on the route, a second signature under
   the same identifier is refused until the first is resolved. That only helps
   if the retry carries the **same** identifier: the stock client sends none,

@@ -6,9 +6,9 @@
  *
  * Both start a real HTTP server on 127.0.0.1, protect it with Latch over an
  * in-process PostgreSQL, and pay it with the official x402 client. Then they
- * break things on purpose: a lost reply, three copies of one payment, and a
- * buyer told "failed" who signs again for the same order, and a server that
- * dies after the money moved.
+ * break things on purpose: a lost reply, three copies of one payment, a settle
+ * that fails while the payment could still land (and a buyer who signs again
+ * for the same order anyway), and a server that dies after the money moved.
  *
  * Testnet mode moves free test USDC only. It refuses any network but Base
  * Sepolia, contacts only the facilitator and the Base Sepolia RPC (every
@@ -19,7 +19,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Hono } from "hono";
 import { PGlite } from "@electric-sql/pglite";
-import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
+import { paymentMiddlewareFromHTTPServer, x402HTTPResourceServer, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient, type FacilitatorClient } from "@x402/core/server";
 import {
   decodePaymentRequiredHeader,
@@ -173,18 +173,16 @@ async function startServer(journal: Journal, facilitator: FacilitatorClient, ora
   const runs = { count: 0 };
 
   const app = new Hono();
-  app.use(
-    paymentMiddleware(
-      {
-        "POST /answer": {
-          accepts: { scheme: "exact", price: PRICE, network: NETWORK, payTo },
-          description: "Latch demo: one paid answer",
-          extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
-        },
-      },
-      server,
-    ),
-  );
+  // latch.http() answers a payment that is still being processed with
+  // 409 operation_in_flight ("retry this same payment") instead of a 402.
+  const httpServer = new x402HTTPResourceServer(server, {
+    "POST /answer": {
+      accepts: { scheme: "exact", price: PRICE, network: NETWORK, payTo },
+      description: "Latch demo: one paid answer",
+      extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
+    },
+  });
+  app.use(paymentMiddlewareFromHTTPServer(latch.http(httpServer)));
   app.post("/answer", async (c) => {
     runs.count++;
     const { question } = (await c.req.json().catch(() => ({}))) as { question?: string };
@@ -250,6 +248,12 @@ const settlementOf = (res: Response) => {
 const reasonOf = (res: Response) => {
   const header = res.headers.get("payment-required");
   return header ? decodePaymentRequiredHeader(header).error : undefined;
+};
+/** What a refused request was told: a 409's error code, or a 402's reason. */
+const toldOf = async (res: Response): Promise<string | undefined> => {
+  if (res.status !== 409) return reasonOf(res);
+  const body = (await res.clone().json().catch(() => ({}))) as { error?: string };
+  return body.error ? `409 ${body.error}` : "409";
 };
 const txLink = (tx: string) => (LIVE ? `https://sepolia.basescan.org/tx/${tx}` : tx);
 
@@ -367,19 +371,25 @@ async function main() {
   const r3 = await Promise.all([1, 2, 3].map(() => b.post(srv.url, { question: "copies" }, h3)));
   const statuses = r3.map((r) => r.status);
   check(srv.runs.count - before3 === 1, "the paid work ran once", `the paid work ran ${srv.runs.count - before3} times`);
-  check(statuses.filter((s) => s === 200).length === 1, `one caller served; the others told: ${r3.map(reasonOf).filter(Boolean).join(", ")}`, `statuses ${statuses.join(", ")}`);
+  const told3 = (await Promise.all(r3.filter((r) => r.status !== 200).map(toldOf))).filter(Boolean);
+  check(
+    statuses.filter((s) => s === 200).length === 1 && statuses.filter((s) => s === 409).length === 2,
+    `one caller served; the others told: ${told3.join(", ")} (retry the same payment)`,
+    `statuses ${statuses.join(", ")}`,
+  );
   note("Without Latch the SDK runs the paid work three times for one payment.");
 
   // 4 — told "failed", the buyer signs again for the same order
-  step(4, 'The buyer is told the payment failed, and signs a new one for the same order');
+  step(4, "The settle fails while the payment could still land, and the buyer signs again anyway");
   const before4 = srv.runs.count;
   crash.failNext = true; // nothing moves; the first payment stays valid and could still land
   const h4a = await b.sign(srv.url, { question: "order" }, "order-1001");
   const r4a = await b.post(srv.url, { question: "order" }, h4a);
-  check(r4a.status === 402, "the first attempt was answered 402, as a real failure would be", `expected 402, got ${r4a.status}`);
+  check(r4a.status === 409, `the buyer was told ${await toldOf(r4a)}: retry this same payment, don't sign a new one`, `expected 409, got ${r4a.status}`);
+  note("Without latch.http() the SDK answers 402 here, which invites a second signature.");
   const h4b = await b.sign(srv.url, { question: "order" }, "order-1001");
   const r4b = await b.post(srv.url, { question: "order" }, h4b);
-  check(r4b.status === 402 && reasonOf(r4b) === "payment_in_progress", "the new signature for the same order was refused, so it can never be charged", `expected a refusal, got ${r4b.status} ${reasonOf(r4b) ?? ""}`);
+  check(r4b.status === 409, "a buyer who signs again anyway is refused, so the second signature can never be charged", `expected a refusal, got ${r4b.status} ${(await toldOf(r4b)) ?? ""}`);
   note("Both payments carry an identifier derived from the order id (purchasePaymentId).");
   note("Without Latch, or with a fresh random identifier per attempt, the second signature is a second charge.");
   note(`Waiting ${STALE_MS / 1000}s, then the buyer retries the original payment…`);

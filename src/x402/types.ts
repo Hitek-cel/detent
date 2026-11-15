@@ -101,7 +101,16 @@ export type X402HookRegistry = {
 };
 
 /** How the payment moves money, which decides how its fate can be checked later. */
-export type TransferMethod = "eip3009" | "permit2" | "opaque";
+/**
+ * The two methods of the SDK's `x402HTTPResourceServer` that `latch.http()`
+ * wraps. Method syntax on purpose, so the SDK's own class fits as it is.
+ */
+export type X402HttpServer = {
+  processHTTPRequest(context: unknown, ...rest: unknown[]): Promise<unknown>;
+  processSettlement(paymentPayload: unknown, ...rest: unknown[]): Promise<unknown>;
+};
+
+export type TransferMethod ="eip3009" | "permit2" | "opaque";
 
 /** What an oracle is asked about: one signed payment, identified the way the chain identifies it. */
 export type SettlementProbe = {

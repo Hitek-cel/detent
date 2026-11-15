@@ -6,6 +6,7 @@ export type {
   SettlementProbe,
   TransferMethod,
   X402HookRegistry,
+  X402HttpServer,
   X402Payload,
   X402Requirements,
   X402SettleResponse,
