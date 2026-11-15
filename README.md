@@ -65,12 +65,28 @@ every request it makes.
 
 ## See your payments
 
+In your own app, the dashboard comes from one call against your Postgres
+journal (the same `sql` Latch already uses):
+
+```ts
+import { journalReport, journalReportData } from "latch402";
+
+const html = await journalReport(sql, { title: "Payments", refreshSeconds: 60 });
+const data = await journalReportData(sql); // the same data as plain objects, to build on
+```
+
+Serve it only to yourself, behind your own admin auth: it lists your payments
+and your buyers' addresses. It reads the Postgres tables directly, so it
+does not work with `memoryJournal`.
+
+From a clone of this repo, the same page opens for the demo's payments:
+
 ```bash
 npm run report            # after npm run example
 npm run report:testnet    # after npm run example:testnet
 ```
 
-This reads the demo's journal and opens a dashboard in your browser:
+What the page shows:
 
 - **Headline numbers**: collected, payments, buyers, median time to deliver,
   and anything that needs a human.
@@ -83,17 +99,7 @@ This reads the demo's journal and opens a dashboard in your browser:
   a **light / dark / auto** theme switch that remembers your choice.
 
 The page is read-only and self-contained: it loads nothing from the network,
-and a Content-Security-Policy forbids it from trying. On your own server the
-same page comes from one call against your Postgres journal:
-
-```ts
-import { journalReport, journalReportData } from "latch402";
-
-const html = await journalReport(sql, { title: "Payments", refreshSeconds: 60 });
-const data = await journalReportData(sql); // the same data as plain objects, to build on
-```
-
-Serve it only to yourself: it lists your payments and your buyers' addresses.
+and a Content-Security-Policy forbids it from trying.
 
 ## Use it with the official SDK
 
