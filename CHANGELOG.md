@@ -3,7 +3,11 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
-## Unreleased
+## 0.5.0 — 2026-11-15
+
+The first npm release since 0.3.2. It also carries the 0.4.0 and 0.4.1
+changes below, which were never published on their own.
+
 
 - **Added `latch.http(httpServer)`: a payment still in flight gets
   `409 operation_in_flight`, not a 402.** The proposed x402 recovery extension
@@ -20,7 +24,7 @@ this repository.
   purchase stays blocked and the caller is never invited to sign again.
 - The demo uses `latch.http()`; steps 3 and 4 now show the 409.
 
-## 0.4.1 — 2026-11-14
+## 0.4.1 — 2026-11-14 (not published; included in 0.5.0)
 
 - **The report is now a dashboard.** Filters for time range, outcome and
   search scope the whole page; the payments table sorts, expands each payment
@@ -32,7 +36,7 @@ this repository.
   anything else that wants to build on the journal. `journalReport` gains a
   `refreshSeconds` option for a page served live.
 
-## 0.4.0 — 2026-11-14
+## 0.4.0 — 2026-11-14 (not published; included in 0.5.0)
 
 - **Added `journalReport(sql)`**: a read-only HTML page built from a Postgres
   journal — headline numbers, where every payment ended, activity over time,
