@@ -22,7 +22,7 @@ import {
  * Every rule below is here because breaking it loses money or corrupts
  * evidence, and each check says which. Run it against any Journal you write:
  *
- *   import { runJournalConformance } from "detent/conformance";
+ *   import { runJournalConformance } from "detent402/conformance";
  *   const report = await runJournalConformance({ create: () => myJournal() });
  *
  * The suite deliberately uses no test framework and no assertion library, so

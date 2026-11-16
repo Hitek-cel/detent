@@ -1,6 +1,6 @@
 # Detent
 
-*Formerly **Latch** (`latch402` on npm). Renamed because another x402 project,
+*On npm as `detent402`. Formerly **Latch** (`latch402`). Renamed because another x402 project,
 the @latch402 readiness scanner for OKX.AI, had the name first. Same code, same
 promise; see [Moving from latch402](#moving-from-latch402).*
 
@@ -79,7 +79,7 @@ In your own app, the dashboard comes from one call against your Postgres
 journal (the same `sql` Detent already uses):
 
 ```ts
-import { journalReport, journalReportData } from "detent";
+import { journalReport, journalReportData } from "detent402";
 
 const html = await journalReport(sql, { title: "Payments", refreshSeconds: 60 });
 const data = await journalReportData(sql); // the same data as plain objects, to build on
@@ -114,15 +114,15 @@ and a Content-Security-Policy forbids it from trying.
 ## Use it with the official SDK
 
 ```bash
-npm install detent @x402/extensions
+npm install detent402 @x402/extensions
 ```
 
 ```ts
 import { paymentMiddlewareFromHTTPServer, x402HTTPResourceServer, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { migrate, postgresJournal } from "detent";
-import { eip3009Oracle, detentX402 } from "detent/x402";
+import { migrate, postgresJournal } from "detent402";
+import { eip3009Oracle, detentX402 } from "detent402/x402";
 import { PAYMENT_IDENTIFIER, declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
 
 await migrate(sql); // once at deploy; safe to re-run
@@ -288,7 +288,7 @@ capture or must void.
 
 ```ts
 import { AuthCaptureEvmScheme } from "@x402/evm/auth-capture/server";
-import { migrateAuthCapture, postgresAuthorizedPaymentStorage } from "detent/x402";
+import { migrateAuthCapture, postgresAuthorizedPaymentStorage } from "detent402/x402";
 
 await migrateAuthCapture(sql);
 new AuthCaptureEvmScheme({ storage: postgresAuthorizedPaymentStorage(sql) });
@@ -330,7 +330,7 @@ escrow contract.
 
   ```ts
   import { appendPaymentIdentifierToExtensions } from "@x402/extensions/payment-identifier";
-  import { purchasePaymentId } from "detent/x402";
+  import { purchasePaymentId } from "detent402/x402";
 
   const payload = await client.createPaymentPayload(paymentRequired);
   appendPaymentIdentifierToExtensions(payload.extensions ?? {}, purchasePaymentId(orderId));
@@ -396,7 +396,7 @@ bridge above. The gate remains the reference for the state machine, the place
 the port contracts are defined, and the right tool for a non-x402 rail.
 
 ```ts
-import { Detent, memoryJournal, hmacSigner } from "detent";
+import { Detent, memoryJournal, hmacSigner } from "detent402";
 
 const gate = new Detent<{ prompt: string }, { answer: string }>(
   { payTo: process.env.PAY_TO!, produceTimeoutMs: 12_000 },
@@ -480,7 +480,7 @@ The port contracts are executable, and each rule states what breaking it costs
 in production:
 
 ```ts
-import { runJournalConformance, runFacilitatorConformance, formatReport } from "detent/conformance";
+import { runJournalConformance, runFacilitatorConformance, formatReport } from "detent402/conformance";
 
 const report = await runJournalConformance({ create: async () => myJournal() });
 console.log(formatReport(report, "myJournal"));
@@ -510,7 +510,7 @@ with another's proof (`F10`/`F11`), refunded settlements that never happened
 ## Postgres
 
 ```ts
-import { postgresJournal, migrate } from "detent";
+import { postgresJournal, migrate } from "detent402";
 
 await migrate(sql);
 const journal = postgresJournal(sql);
@@ -548,12 +548,13 @@ over as they are.
 
 | latch402 | detent |
 |---|---|
-| `npm install latch402` | `npm install detent` |
-| `"latch402"`, `"latch402/x402"`, `"latch402/conformance"` | `"detent"`, `"detent/x402"`, `"detent/conformance"` |
+| `npm install latch402` | `npm install detent402` |
+| `"latch402"`, `"latch402/x402"`, `"latch402/conformance"` | `"detent402"`, `"detent402/x402"`, `"detent402/conformance"` |
 | `latchX402(server, options)` | `detentX402(server, options)` |
 | `X402Latch`, `X402LatchOptions` | `X402Detent`, `X402DetentOptions` |
 | `LatchError`, `isLatchError` | `DetentError`, `isDetentError` |
 | error codes `latch_unavailable`, `latch_unsupported_payment` | `detent_unavailable`, `detent_unsupported_payment` |
+| 402 extension `latch` | `detent` |
 | demo folder `.latch-demo/` | `.detent-demo/` (the demo moves it for you) |
 
 ## License

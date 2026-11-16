@@ -5,14 +5,16 @@ this repository.
 
 ## Unreleased
 
-- **Renamed from Latch (`latch402`) to Detent (`detent`).** Another x402
-  project, the @latch402 readiness scanner for OKX.AI, used the name first.
-  Install `detent`; import from `"detent"`, `"detent/x402"` and
-  `"detent/conformance"`. Renamed exports: `latchX402` → `detentX402`,
+- **Renamed from Latch (`latch402`) to Detent (`detent402` on npm).** Another
+  x402 project, the @latch402 readiness scanner for OKX.AI, used the name
+  first; npm refuses a bare `detent` as too close to `dedent`. Install
+  `detent402`; import from `"detent402"`, `"detent402/x402"` and
+  `"detent402/conformance"`. Renamed exports: `latchX402` → `detentX402`,
   `X402Latch` → `X402Detent`, `X402LatchOptions` → `X402DetentOptions`,
   `LatchError` → `DetentError`, `isLatchError` → `isDetentError`. Error
   codes `latch_unavailable` and `latch_unsupported_payment` are now
-  `detent_unavailable` and `detent_unsupported_payment`. Database tables keep
+  `detent_unavailable` and `detent_unsupported_payment`, and the token the 402
+  carries is in a `detent` extension instead of `latch`. Database tables keep
   their `latch_` names, so existing journals and receipts work unchanged. The
   demo folder is now `.detent-demo/`, and the demo moves an old
   `.latch-demo/` across. The GitHub repository is now Hitek-cel/detent; old

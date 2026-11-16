@@ -1,5 +1,5 @@
 {
-  "name": "detent",
+  "name": "detent402",
   "version": "0.5.0",
   "description": "Settlement safety for paid HTTP and x402: charged if and only if delivered.",
   "type": "module",

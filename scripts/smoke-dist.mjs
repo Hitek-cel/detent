@@ -2,9 +2,9 @@
 // package's own export map, with no TypeScript loader involved.
 import assert from "node:assert/strict";
 
-const core = await import("detent");
-const x402 = await import("detent/x402");
-const conformance = await import("detent/conformance");
+const core = await import("detent402");
+const x402 = await import("detent402/x402");
+const conformance = await import("detent402/conformance");
 
 const gate = new core.Detent(
   { payTo: "0xseller" },
