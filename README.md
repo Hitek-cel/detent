@@ -19,6 +19,50 @@ settle that reports failure after it broadcast, three copies of one payment
 arriving at once. Detent makes that state durable, through the SDK's own
 lifecycle hooks.
 
+## Quick start
+
+You already sell an endpoint with the official x402 SDK. Detent adds about
+fifteen lines to that server; your route handlers do not change.
+
+**You need:** Postgres (each payment's record lives there, which is what
+survives a crash), Node 20+, and an RPC URL for your chain, so Detent can ask
+the token contract whether a payment landed.
+
+```bash
+npm install detent402 @x402/extensions
+```
+
+```ts
+import { migrate, postgresJournal } from "detent402";
+import { eip3009Oracle, detentX402 } from "detent402/x402";
+
+await migrate(sql); // 1. create the tables, once at deploy
+
+const detent = detentX402(server, { // 2. attach to your x402ResourceServer
+  journal: postgresJournal(sql),
+  oracle: eip3009Oracle({ rpcUrls: { "eip155:8453": BASE_RPC_URL } }),
+  onAlarm: (alarm) => console.error("detent", alarm), // wire to your pager
+});
+
+// 3. on each paid route: extensions: { ...detent.declare() }
+// 4. wrap the middleware, so an in-flight payment gets 409, not a fresh 402:
+app.use(paymentMiddlewareFromHTTPServer(detent.http(httpServer)));
+
+// 5. finish payments whose process died; safe to run in every instance
+setInterval(() => detent.sweep().catch(console.error), 30_000);
+```
+
+`sql` is a two-method shape (`query`, `transaction`) that `pg`, `postgres.js`
+and PGlite each wrap in a few lines. The complete wiring, with imports, is in
+[Use it with the official SDK](#use-it-with-the-official-sdk). To see it work
+first, with no database, wallet or network: [See it work](#see-it-work).
+
+**Using Detent, even just trying it?** Say so in an
+[issue](https://github.com/Hitek-cel/detent/issues) or mention
+[@Hitek_cel](https://x.com/Hitek_cel) on X. Detent sends nothing home, so
+that is the only way its author learns anyone uses it, and it shapes what gets
+built next.
+
 ## Status
 
 **0.6.0. Not yet used in production by anyone, including its author.**
