@@ -426,7 +426,17 @@ export function detentX402(server: X402HookRegistry, options: X402DetentOptions)
     return entry.seq;
   }
 
-  const lastAt = (snap: InvoiceSnapshot): number => snap.entries[snap.entries.length - 1]?.at ?? 0;
+  /**
+   * When this payment last made progress. The opening `quoted` entry carries
+   * the payment's deadline, not the time it was written, so a claim that died
+   * right after opening is dated by `quote.openedAt` instead; without that it
+   * would look fresh until its deadline and hold the caller at 409 meanwhile.
+   */
+  const lastAt = (snap: InvoiceSnapshot): number => {
+    const last = snap.entries[snap.entries.length - 1];
+    if (last?.state === "quoted" && typeof snap.quote.openedAt === "number") return snap.quote.openedAt;
+    return last?.at ?? 0;
+  };
   const isStale = (snap: InvoiceSnapshot): boolean => clock.now() - lastAt(snap) > staleMs;
 
   function methodOf(snap: InvoiceSnapshot): TransferMethod {
@@ -460,7 +470,7 @@ export function detentX402(server: X402HookRegistry, options: X402DetentOptions)
     const { quote } = snap;
     // The earliest entry, not the first: the opening entry can carry a later time.
     const times = snap.entries.map((e) => e.at).filter((t) => Number.isFinite(t) && t > 0);
-    const first = times.length ? Math.min(...times) : undefined;
+    const first = snap.quote.openedAt ?? (times.length ? Math.min(...times) : undefined);
     return {
       network: quote.network,
       asset: quote.asset,
@@ -567,6 +577,15 @@ export function detentX402(server: X402HookRegistry, options: X402DetentOptions)
   async function resolveSettling(snap: InvoiceSnapshot): Promise<State> {
     const id = snap.quote.invoiceId;
     try {
+      // The facilitator already reported success and it was written down; the
+      // process died before marking the payment delivered. That record is the
+      // same evidence a live process delivers on, so it needs no chain read,
+      // and a chain that cannot be reached must not strand a paid caller.
+      const stored = (await journal.getResult(setKey(id)))?.payload as X402SettleResponse | undefined;
+      if (stored?.success === true) {
+        await markDelivered(snap, clone(stored), { recovered: true, source: "stored_settlement" });
+        return "delivered";
+      }
       const status = await statusOf(snap);
       if (status === "settled") {
         await markDelivered(
@@ -857,6 +876,7 @@ export function detentX402(server: X402HookRegistry, options: X402DetentOptions)
         requestHash: facts.requestHash,
         nonce: facts.nonce,
         expiresAt: facts.expiresAt,
+        openedAt: clock.now(),
       };
 
       // The claim. `open` is atomic, so of any number of concurrent copies of

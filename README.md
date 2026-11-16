@@ -507,6 +507,17 @@ as a *retryable* conflict (`J16`); the reference ledger settled one invoice
 with another's proof (`F10`/`F11`), refunded settlements that never happened
 (`F18`/`F19`), and refunded one settlement twice under two keys (`F20`).
 
+### Crash vectors for the x402 recovery spec
+
+[`conformance/x402-recovery-control12.json`](conformance/x402-recovery-control12.json)
+is a set of 29 crash vectors in the format proposed for control 12 of the x402
+recovery extension: die before or after each journal write, restart, retry the
+same payment, and record what happened, with charges counted on the rail. The
+test suite regenerates and checks it on every run, so it cannot drift from the
+code. [conformance/README.md](conformance/README.md) explains every field and
+maps Detent's journal writes to the spec's names. Generating it found two
+recovery gaps, both fixed.
+
 ## Postgres
 
 ```ts

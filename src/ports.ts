@@ -19,6 +19,11 @@ export type Quote = {
   requestHash: string;
   nonce: string;
   expiresAt: number;
+  /**
+   * When the claim was opened, if the opener recorded it. The opening journal
+   * entry carries `expiresAt`, so this is the only record of when work began.
+   */
+  openedAt?: number;
 };
 
 export type JournalEntry = {

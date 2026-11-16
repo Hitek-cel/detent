@@ -33,6 +33,7 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.ts",
     "test:dist": "npm run build && node scripts/smoke-dist.mjs",
+    "vectors": "node scripts/vectors.mjs",
     "typecheck": "tsc --noEmit",
     "demo": "node demo.ts",
     "build:console": "node scripts/build-console.mjs",

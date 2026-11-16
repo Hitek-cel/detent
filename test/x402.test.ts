@@ -1,4 +1,5 @@
 import test from "node:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import { PGlite } from "@electric-sql/pglite";
@@ -95,7 +96,7 @@ type Auth = { from: string; nonce: string; validBefore: string };
 const authOf = (payload: { payload: Record<string, unknown> }) => payload.payload.authorization as Auth;
 
 /** One server process: its own SDK objects, handler and bridge, over a journal and chain that outlive it. */
-function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, opts: { oracle?: boolean; findTx?: boolean | "throws"; flow?: string; pid?: boolean; token?: boolean; replayWindowMs?: number; schemes?: string[]; conform?: boolean } = {}) {
+function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, opts: { oracle?: boolean | "unreachable"; findTx?: boolean | "throws"; flow?: string; pid?: boolean; token?: boolean; replayWindowMs?: number; schemes?: string[]; conform?: boolean } = {}) {
   const { journal, chain, clock } = shared;
   const calls = { verify: 0, settle: 0 };
   const control = { fault: "none" as Fault, handlerRuns: 0, hold: undefined as Promise<void> | undefined };
@@ -129,7 +130,10 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
 
   const server = new x402ResourceServer(facilitator).register(NETWORK, new ExactEvmScheme());
   const probes: SettlementProbe[] = [];
-  const oracle: SettlementOracle = async (probe) => (chain.has(probe.payer, probe.nonce) ? "settled" : "unsettled");
+  const oracle: SettlementOracle =
+    opts.oracle === "unreachable"
+      ? async () => Promise.reject(new Error("rail unreachable"))
+      : async (probe) => (chain.has(probe.payer, probe.nonce) ? "settled" : "unsettled");
   if (opts.findTx === "throws") oracle.findTransaction = async () => Promise.reject(new Error("rpc down"));
   else if (opts.findTx !== false) oracle.findTransaction = async (probe) => (probes.push(probe), chain.txOf(probe.payer, probe.nonce));
   const detent = detentX402(server, {
@@ -677,6 +681,177 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
     console.log("crash matrix outcomes", outcomes);
     for (const r of rows) console.log("CRASHROW " + JSON.stringify(r));
   }
+});
+
+test("x402: a recorded successful settle is delivered after a crash even when the chain cannot be read", async () => {
+  // Found by the control-12 vectors: the process died after writing the
+  // facilitator's success and before marking the payment delivered.
+  const body = { q: "a" };
+  const inner = memoryJournal();
+  const chain = makeChain();
+  const clock = makeClock();
+  const a = instance({ journal: dying(inner, 6, "before"), chain, clock });
+  const b = instance({ journal: inner, chain, clock }, { oracle: "unreachable" });
+  const client = new x402Client();
+  registerExactEvmScheme(client, { signer: privateKeyToAccount(generatePrivateKey()) });
+  const header = await sign({ app: b.app, client }, body);
+  void post(a.app, body, header);
+  for (let i = 0; i < 40; i++) await tick();
+  assert.equal(chain.size, 1, "the caller has paid");
+
+  clock.advance(STALE + 1);
+  assert.deepEqual((await b.detent.sweep()).map((r) => r.state), ["delivered"], "no chain read needed");
+  assert.equal(b.alarms.some((x) => x.kind === "stuck"), false);
+  const retry = await post(b.app, body, header);
+  assert.equal(retry.status, 200);
+  assert.deepEqual(await retry.json(), { answer: "answer to a", run: 1 });
+  assert.equal((await b.detent.chain())[0]?.receipt.settlementRef, "0xtx1");
+});
+
+test("x402: a claim that died right after opening goes stale like any other, not at the payment's deadline", async () => {
+  // Found by the control-12 vectors: the opening entry carries the deadline,
+  // so this claim used to hold the caller at 409 until the payment expired.
+  const body = { q: "a" };
+  const inner = memoryJournal();
+  const chain = makeChain();
+  const clock = makeClock();
+  const a = instance({ journal: dying(inner, 1, "after"), chain, clock }, { conform: true });
+  const b = instance({ journal: inner, chain, clock }, { conform: true });
+  const client = new x402Client();
+  registerExactEvmScheme(client, { signer: privateKeyToAccount(generatePrivateKey()) });
+  const header = await sign({ app: b.app, client }, body);
+  void post(a.app, body, header);
+  for (let i = 0; i < 40; i++) await tick();
+  assert.deepEqual(inner.snapshotAll().map((s) => s.state), ["quoted"]);
+
+  const fresh = await post(b.app, body, header);
+  assert.equal(fresh.status, 409, "inside the stale window the claim is still honoured");
+  clock.advance(STALE + 1);
+  // The caller's retry closes it now. (The sweep finds it by its last entry's
+  // time, which for this entry is the deadline, so the sweep still waits.)
+  const retry = await post(b.app, body, header);
+  assert.equal(retry.status, 402);
+  assert.equal(reasonOf(retry), "payment_abandoned");
+  assert.deepEqual(inner.snapshotAll().map((s) => s.state), ["void"]);
+  assert.equal(chain.size, 0);
+  assert.equal(a.control.handlerRuns + b.control.handlerRuns, 0);
+});
+
+// ── conformance vectors for the x402 recovery extension, control 12 ──────
+//
+// One vector per crash point, in the format proposed on x402-foundation/x402#3848:
+// die before or after each journal write, restart later, retry the same payment.
+// Run normally, this test checks the published file still matches what the code
+// does; `npm run vectors` regenerates it. See conformance/README.md.
+
+const VECTOR_FILE = new URL("../conformance/x402-recovery-control12.json", import.meta.url);
+/** Detent's seven journal writes, in order, under the spec's fixed vocabulary. */
+const JOURNAL_WRITES = ["claim", "staged", "response_saved", "settling", "settle_result", "delivered", "receipt"] as const;
+const RESTART_AFTER_SECONDS = 180; // above staleMs (120 s here), so the claim timer is exercised
+
+type Vector = {
+  journalWrite: (typeof JOURNAL_WRITES)[number];
+  boundary: "before" | "after";
+  railOnRestart: "landed" | "not_landed" | "unreachable";
+  restartAfterSeconds: number;
+  expect: {
+    handlerRuns: number;
+    settleCalls: number;
+    charges: number;
+    retryStatus: number;
+    retryReplaysStoredResponse: boolean;
+    retryAfter: "present" | "absent";
+    state: string;
+    keyBlocked: boolean;
+  };
+};
+
+async function crashVector(at: number, when: "before" | "after", opts: { fault?: Fault; unreachable?: boolean }): Promise<Vector> {
+  const body = { q: "a" };
+  const inner = memoryJournal();
+  const chain = makeChain();
+  const clock = makeClock();
+  const a = instance({ journal: dying(inner, at, when), chain, clock }, { conform: true });
+  const b = instance({ journal: inner, chain, clock }, { conform: true, ...(opts.unreachable ? { oracle: "unreachable" as const } : {}) });
+  const client = new x402Client();
+  registerExactEvmScheme(client, { signer: privateKeyToAccount(generatePrivateKey()) });
+  const header = await sign({ app: b.app, client }, body);
+
+  // The first process takes the payment and dies at the chosen write (or hangs in the settle).
+  a.control.fault = opts.fault ?? "none";
+  await Promise.race([post(a.app, body, header), (async () => { for (let i = 0; i < 40; i++) await tick(); })()]);
+  const landed = chain.size === 1;
+
+  // The restart: a sweep, then the caller retries the same payment.
+  clock.advance(RESTART_AFTER_SECONDS * 1000);
+  await b.detent.sweep();
+  const runsBefore = b.control.handlerRuns;
+  const retry = await post(b.app, body, header);
+  const replayed = retry.status === 200 && b.control.handlerRuns === runsBefore;
+  if (retry.status === 200) assert.deepEqual(await retry.json(), { answer: "answer to a", run: 1 });
+
+  // Then the payment's own deadline passes and reconciliation finishes.
+  clock.advance(400_000);
+  await b.detent.sweep();
+  const late = await post(b.app, body, header);
+  const states = inner.snapshotAll().map((s) => s.state);
+  assert.equal(states.length, 1, "one payment, one record");
+
+  return {
+    journalWrite: JOURNAL_WRITES[at - 1]!,
+    boundary: when,
+    railOnRestart: opts.unreachable ? "unreachable" : landed ? "landed" : "not_landed",
+    restartAfterSeconds: RESTART_AFTER_SECONDS,
+    expect: {
+      handlerRuns: a.control.handlerRuns + b.control.handlerRuns,
+      settleCalls: a.calls.settle + b.calls.settle,
+      charges: chain.size,
+      retryStatus: retry.status,
+      retryReplaysStoredResponse: replayed,
+      retryAfter: retry.headers.has("retry-after") ? "present" : "absent",
+      state: states[0]!,
+      // Blocked: the key cannot be used for new paid work. Only `void` frees it.
+      keyBlocked: late.status !== 402,
+    },
+  };
+}
+
+test("x402 recovery control 12: the published crash vectors match what Detent does", async () => {
+  const vectors: Vector[] = [];
+  for (let at = 1; at <= JOURNAL_WRITES.length; at++) {
+    for (const when of ["before", "after"] as const) {
+      vectors.push(await crashVector(at, when, {}));
+      vectors.push(await crashVector(at, when, { unreachable: true }));
+    }
+  }
+  // The settle went out and never came back, and the payment did not land. (Dying
+  // before that write with a working facilitator is the "landed" case above.)
+  vectors.push(await crashVector(5, "before", { fault: "hangs_without_landing" }));
+
+  // The invariants every row must hold, whatever the file says.
+  for (const v of vectors) {
+    const id = `${v.journalWrite}/${v.boundary}/${v.railOnRestart}`;
+    assert.ok(v.expect.charges <= 1 && v.expect.handlerRuns <= 1, `${id}: double charge or double run`);
+    // A fresh 402 is honest only once nothing moved and the key is free (§5.1(7): `void`).
+    if (v.expect.retryStatus === 402) {
+      assert.ok(v.expect.charges === 0 && v.expect.state === "void" && !v.expect.keyBlocked, `${id}: a fresh 402 while money may have moved`);
+    }
+    if (v.expect.state === "stuck") {
+      assert.equal(v.expect.keyBlocked, true, id);
+    } else if (v.expect.charges === 1) {
+      assert.equal(v.expect.state, "delivered", `${id}: charged but not delivered`);
+    } else {
+      assert.notEqual(v.expect.state, "delivered", `${id}: delivered without a charge`);
+    }
+  }
+  const keys = vectors.map((v) => `${v.journalWrite}/${v.boundary}/${v.railOnRestart}`);
+  assert.equal(new Set(keys).size, keys.length, "one vector per (write, boundary, rail)");
+
+  if (process.env.DETENT_WRITE_VECTORS) {
+    mkdirSync(new URL("../conformance/", import.meta.url), { recursive: true });
+    writeFileSync(VECTOR_FILE, JSON.stringify(vectors, null, 2) + "\n");
+  }
+  assert.deepEqual(vectors, JSON.parse(readFileSync(VECTOR_FILE, "utf8")), "conformance/x402-recovery-control12.json is out of date: npm run vectors");
 });
 
 // ── a journal that is down ────────────────────────────────────────────────

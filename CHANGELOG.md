@@ -3,6 +3,26 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## Unreleased
+
+- **Crash vectors for the x402 recovery spec.** `conformance/x402-recovery-control12.json`
+  holds 29 vectors in the format proposed for control 12 of the recovery
+  extension (x402-foundation/x402#3848): die before or after each journal
+  write, restart, retry the same payment. Charges are counted on the rail. The
+  test suite regenerates and compares the file on every run; `npm run vectors`
+  rewrites it. `conformance/README.md` documents every field.
+- **A recorded successful settle is now delivered after a crash even when the
+  chain cannot be read.** A server that died after storing the facilitator's
+  success, but before marking the payment delivered, left a paid caller
+  `stuck` if the settlement oracle was unreachable. Recovery now delivers from
+  the stored result first, the same evidence a live server delivers on.
+- **A claim that died right after opening no longer holds the caller until the
+  payment's deadline.** The opening journal entry is dated by the deadline, so
+  such a claim looked fresh and retries got `409` until it expired. Quotes now
+  record `openedAt` (an optional field; older records still load), and the
+  caller's retry closes the claim after the normal stale timeout, nothing
+  charged. The sweep still finds such a claim at the deadline.
+
 ## 0.6.0 — 2026-11-16
 
 The first release as Detent (`detent402`). `detent402@0.5.0` was published
