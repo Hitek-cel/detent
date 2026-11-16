@@ -3,7 +3,11 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
-## Unreleased
+## 0.6.0 — 2026-11-16
+
+The first release as Detent (`detent402`). `detent402@0.5.0` was published
+earlier the same day by mistake, from this code under the old version number;
+use 0.6.0.
 
 - **Renamed from Latch (`latch402`) to Detent (`detent402` on npm).** Another
   x402 project, the @latch402 readiness scanner for OKX.AI, used the name
