@@ -33,9 +33,10 @@ lifecycle hooks.
 - It covers one payment flow of one scheme. See [Limits](#limits).
 - It follows the in-flight rule of the proposed x402 recovery extension
   ([x402-foundation/x402#3848](https://github.com/x402-foundation/x402/pull/3848),
-  §5.1(6)–(7), control 9). A payment that is still being processed is answered
-  `409 operation_in_flight` ("retry this same payment"), never a 402 that
-  invites a second signature. That needs `latch.http()`; see below.
+  0.9, §5.1(6)–(7), controls 9 and 11). A payment that is still being processed
+  is answered `409 operation_in_flight` ("retry this same payment"), and one
+  that is stuck `503 payment_unresolved`, never a 402 that invites a second
+  signature. That needs `latch.http()`; see below.
 
 If you try it and it breaks, that report is worth more to this project than a
 star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
@@ -164,8 +165,10 @@ Retry-After: 2
  "message":"This payment is still being processed. Retry this same payment; do not sign a new one."}
 ```
 
-A payment whose outcome is unknown and has been alarmed (`stuck`) gets the
-same 409 with `"reason":"payment_unresolved"` and no `Retry-After`. With the
+A payment whose outcome is unknown and has been alarmed (`stuck`) gets
+`503` with the same body, `"reason":"payment_unresolved"` and no `Retry-After`:
+this one payment is blocked until someone checks the chain, not the server
+being down (spec 0.9, control 11). With the
 stock `paymentMiddleware(routes, server)` everything else here still holds,
 but those refusals go out as `402 payment_in_progress`.
 

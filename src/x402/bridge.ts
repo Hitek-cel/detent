@@ -72,19 +72,21 @@ const TOKEN = /^[0-9a-f]{32}$/;
  * Refusals whose honest HTTP answer is "retry this same payment", not a payment
  * challenge. A 402 invites the client to sign a second authorization for one
  * purchase: harmless while the first is still in flight, two charges once it
- * lands. `latch.http()` answers these `409 operation_in_flight`, as the x402
- * recovery spec requires (x402-foundation/x402#3848, §5.1(6) and (7)).
+ * lands. `latch.http()` answers these as the x402 recovery spec requires
+ * (x402-foundation/x402#3848, 0.9, §5.1(6) and (7), controls 9 and 11):
  *
- *   payment_in_progress  another copy of this payment holds the claim, or its
- *                        settle has not resolved yet.
- *   payment_unresolved   the settle's outcome is unknown and an operator has
- *                        been alarmed (`stuck`). Signing again could pay twice.
+ *   payment_in_progress  409, Retry-After: another copy of this payment holds
+ *                        the claim, or its settle has not resolved yet.
+ *   payment_unresolved   503, no Retry-After: the settle's outcome is unknown
+ *                        and an operator has been alarmed (`stuck`). Signing
+ *                        again could pay twice. The reason in the body tells it
+ *                        apart from a server-health 503.
  */
 const IN_FLIGHT = new Set(["payment_in_progress", "payment_unresolved"]);
 
 function inFlightResponse(reason: string) {
   return {
-    status: 409,
+    status: reason === "payment_unresolved" ? 503 : 409,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
@@ -183,8 +185,9 @@ export type X402Latch = {
   chain(): Promise<SignedReceipt[]>;
   /**
    * Wraps the SDK's `x402HTTPResourceServer` so a payment Latch is still
-   * processing is answered `409 operation_in_flight` (retry the same payment)
-   * instead of a `402` payment challenge. Returns the same server; pass it to
+   * processing is answered `409 operation_in_flight` (retry the same payment),
+   * and one that is `stuck` `503 payment_unresolved`, instead of a `402`
+   * payment challenge. Returns the same server; pass it to
    * your framework's `paymentMiddlewareFromHTTPServer`. Without it everything
    * else holds, but those refusals go out as `402 payment_in_progress`.
    */

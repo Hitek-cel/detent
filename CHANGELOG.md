@@ -3,6 +3,15 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## Unreleased
+
+- **A `stuck` payment's retry is now answered `503 payment_unresolved`, not
+  409** (with `latch.http()`). Recovery spec 0.9 splits the two "don't pay
+  again yet" answers: `409 operation_in_flight` with `Retry-After` while the
+  payment can still resolve, and `503` with no `Retry-After` once it is stuck
+  (control 11). The body is unchanged and names the reason, so a client can
+  tell it apart from a server-health 503. Payments still in flight keep 409.
+
 ## 0.5.0 — 2026-11-15
 
 The first npm release since 0.3.2. It also carries the 0.4.0 and 0.4.1

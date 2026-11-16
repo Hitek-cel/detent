@@ -1089,9 +1089,9 @@ test("journalReport: a read-only page of where every payment ended, safe to open
 
 type Conflict = { error: string; reason: string; retry: string; message: string };
 
-async function conflictOf(res: Response): Promise<Conflict> {
-  assert.equal(res.status, 409);
-  assert.equal(res.headers.get("payment-required"), null, "a 409 carries no payment challenge");
+async function conflictOf(res: Response, status = 409): Promise<Conflict> {
+  assert.equal(res.status, status);
+  assert.equal(res.headers.get("payment-required"), null, `a ${status} carries no payment challenge`);
   return (await res.json()) as Conflict;
 }
 
@@ -1175,7 +1175,7 @@ test("x402 http(): a retry the facilitator rejects because the first settle land
   assert.equal(w.control.handlerRuns, 1);
 });
 
-test("x402 http(): a stuck payment stays blocked with 409 payment_unresolved", async () => {
+test("x402 http(): a stuck payment stays blocked with 503 payment_unresolved", async () => {
   const w = world({ conform: true, oracle: false });
   w.control.fault = "lands_then_throws";
   const header = await sign(w, { q: "a" });
@@ -1183,8 +1183,12 @@ test("x402 http(): a stuck payment stays blocked with 409 payment_unresolved", a
   w.clock.advance(500_000);
   assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["stuck"]);
 
+  // Spec 0.9 control 11: 503, the reason named, no Retry-After.
   const retry = await post(w.app, { q: "a" }, header);
-  assert.equal((await conflictOf(retry)).reason, "payment_unresolved");
+  const body = await conflictOf(retry, 503);
+  assert.equal(body.error, "operation_in_flight");
+  assert.equal(body.reason, "payment_unresolved");
+  assert.equal(body.retry, "same_payment");
   assert.equal(retry.headers.get("retry-after"), null, "no promise of a quick answer: a human must look");
   assert.equal(w.chain.size, 1);
 });
