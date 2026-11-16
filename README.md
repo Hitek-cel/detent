@@ -28,6 +28,11 @@ lifecycle hooks.
   the chain showed exactly one charge per purchase — four for four in the
   latest run. The lost reply, the duplicate copies, the buyer who signed again
   for the same order and the crash recovery moved nothing extra.
+- **It has also run live through PayAI's facilitator** (2026-11-16):
+  `node examples/x402-demo.ts --testnet --facilitator payai`. Same steps, same
+  result, four charges for four purchases, all settled by PayAI. Latch is not
+  affiliated with or endorsed by PayAI; using any facilitator means accepting
+  its terms.
 - **It has not handled real money.** Nothing here has run on mainnet or in
   production.
 - It covers one payment flow of one scheme. See [Limits](#limits).
@@ -232,7 +237,11 @@ believing the facilitator. `eip3009Oracle` is one read-only `eth_call` to the
 token contract: `authorizationState(payer, nonce)` is true exactly when that
 authorization moved money. If it did, the caller gets the response. If it did
 not, the payment stays `settling` until its own `validBefore` passes, because
-until then it still could.
+until then it still could. When the facilitator's reply was lost, the oracle
+also looks up the transaction that used the authorization (its
+`AuthorizationUsed` event, searched only within the payment's own time window),
+so a recovered payment still has a settlement link in the report and on its
+receipt. That lookup is best effort and never changes an outcome.
 
 **Recovery never charges.** The sweep only learns what already happened. It
 marks a payment `delivered` when the chain says it settled and `void` when it

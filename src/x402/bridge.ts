@@ -10,6 +10,7 @@ import type {
   AfterVerifyDirective,
   BeforeVerifyDirective,
   SettlementOracle,
+  SettlementProbe,
   TransferMethod,
   X402HookRegistry,
   X402HttpServer,
@@ -447,19 +448,44 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
     const expired = clock.now() > quote.expiresAt + expiryGraceMs;
     let answer: "settled" | "unsettled";
     try {
-      answer = await options.oracle({
-        network: quote.network,
-        asset: quote.asset,
-        payer: quote.payer,
-        nonce: quote.nonce,
-        method: methodOf(snap),
-        expiresAt: quote.expiresAt,
-      });
+      answer = await options.oracle(probeOf(snap));
     } catch {
       return "unknown";
     }
     if (answer === "settled") return "settled";
     return expired ? "cannot_land" : "pending";
+  }
+
+  function probeOf(snap: InvoiceSnapshot): SettlementProbe {
+    const { quote } = snap;
+    // The earliest entry, not the first: the opening entry can carry a later time.
+    const times = snap.entries.map((e) => e.at).filter((t) => Number.isFinite(t) && t > 0);
+    const first = times.length ? Math.min(...times) : undefined;
+    return {
+      network: quote.network,
+      asset: quote.asset,
+      payer: quote.payer,
+      nonce: quote.nonce,
+      method: methodOf(snap),
+      expiresAt: quote.expiresAt,
+      ...(first ? { openedAt: first } : {}),
+    };
+  }
+
+  /**
+   * The transaction behind a payment the oracle found settled, for the
+   * settlement reference. Best effort: an oracle that cannot say, or fails,
+   * leaves the reference empty and changes nothing else.
+   */
+  async function settledTransaction(snap: InvoiceSnapshot): Promise<string> {
+    const find = options.oracle?.findTransaction;
+    if (!find) return "";
+    try {
+      const tx = await find(probeOf(snap));
+      return typeof tx === "string" ? tx : "";
+    } catch {
+      return "";
+    }
   }
 
   async function writeReceipt(
@@ -547,7 +573,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
           snap,
           {
             success: true,
-            transaction: "",
+            transaction: await settledTransaction(snap),
             network: snap.quote.network as X402SettleResponse["network"],
             payer: snap.quote.payer,
           },
@@ -996,7 +1022,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       if (status === "settled") {
         const settled: X402SettleResponse = {
           success: true,
-          transaction: text(record(ctx.error)?.transaction) ?? "",
+          transaction: text(record(ctx.error)?.transaction) || (await settledTransaction(snap)),
           network: ctx.requirements.network as X402SettleResponse["network"],
           payer: held.quote.payer,
         };

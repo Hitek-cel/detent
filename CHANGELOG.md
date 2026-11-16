@@ -11,6 +11,18 @@ this repository.
   payment can still resolve, and `503` with no `Retry-After` once it is stuck
   (control 11). The body is unchanged and names the reason, so a client can
   tell it apart from a server-health 503. Payments still in flight keep 409.
+- **A payment recovered from the chain now keeps its settlement transaction.**
+  When the facilitator's reply was lost (a crash, a timeout), Latch learned
+  from `authorizationState` that the payment landed but not which transaction
+  did it, so the report showed "—" and the receipt had no `settlementRef`.
+  `eip3009Oracle` now has `findTransaction`, which finds the
+  `AuthorizationUsed` event within the payment's own time window, in chunks
+  small enough for public RPCs (`logRangeBlocks`, default 200; `maxLogCalls`,
+  default 30). A custom `SettlementOracle` may add its own `findTransaction`.
+  Best effort: if it fails or finds nothing, the payment is delivered exactly as
+  before, without the link. Payments recovered earlier are not rewritten.
+- The x402 demo takes `--facilitator payai` to run against PayAI's public
+  facilitator instead of x402.org (only those two are allowed).
 
 ## 0.5.0 — 2026-11-15
 

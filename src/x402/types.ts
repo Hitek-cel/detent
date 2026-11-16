@@ -121,6 +121,8 @@ export type SettlementProbe = {
   method: TransferMethod;
   /** Milliseconds. After this the payment can no longer land. */
   expiresAt: number;
+  /** Milliseconds. When Latch first saw this payment; it cannot have landed much earlier. */
+  openedAt?: number;
 };
 
 /**
@@ -131,4 +133,12 @@ export type SettlementProbe = {
  * when the question cannot be answered; the bridge then waits rather than
  * guesses.
  */
-export type SettlementOracle = (probe: SettlementProbe) => Promise<"settled" | "unsettled">;
+export type SettlementOracle = ((probe: SettlementProbe) => Promise<"settled" | "unsettled">) & {
+  /**
+   * Optional: the transaction that settled a payment the oracle called
+   * "settled", or null if it cannot be found. Used only to fill in the
+   * settlement reference (the report's link, the receipt) for a payment
+   * recovered from the chain. Best effort: it never changes an outcome.
+   */
+  findTransaction?: (probe: SettlementProbe) => Promise<string | null>;
+};

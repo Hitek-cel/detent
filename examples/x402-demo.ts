@@ -47,7 +47,14 @@ const LIVE = process.argv.includes("--testnet");
 const NETWORK = "eip155:84532"; // Base Sepolia
 const CHAIN_ID_HEX = "0x14a34";
 const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"; // test USDC on Base Sepolia
-const FACILITATOR = "https://x402.org/facilitator";
+// `--facilitator payai` picks another public facilitator; only these known ones.
+const FACILITATORS: Record<string, string> = {
+  x402: "https://x402.org/facilitator",
+  payai: "https://facilitator.payai.network",
+};
+const FACILITATOR_NAME = process.argv[process.argv.indexOf("--facilitator") + 1] ?? "x402";
+const FACILITATOR = process.argv.includes("--facilitator") ? FACILITATORS[FACILITATOR_NAME] : FACILITATORS.x402;
+if (!FACILITATOR) throw new Error(`unknown facilitator; choose one of: ${Object.keys(FACILITATORS).join(", ")}`);
 const RPC = "https://sepolia.base.org";
 const PRICE = "$0.01";
 const PRICE_UNITS = 10_000n; // 0.01 USDC, 6 decimals
@@ -71,7 +78,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 console.warn = () => {};
 
 // ── outbound allowlist: the only places this process may talk to ───────────
-const allowed = new Set(LIVE ? ["127.0.0.1", "x402.org", "sepolia.base.org"] : ["127.0.0.1"]);
+const allowed = new Set(LIVE ? ["127.0.0.1", new URL(FACILITATOR).hostname, "sepolia.base.org"] : ["127.0.0.1"]);
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
@@ -297,6 +304,7 @@ async function main() {
     buyerKey = wallet.buyerKey;
     say(`\nBuyer test wallet:  ${buyerAddress}${created ? "  (just created)" : ""}`);
     say(`Seller test wallet: ${payTo}`);
+    say(`Facilitator:        ${FACILITATOR}`);
 
     const funds = await usdcBalance(buyerAddress);
     if (funds < 5n * PRICE_UNITS) {

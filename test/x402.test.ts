@@ -27,7 +27,7 @@ import { Latch } from "../src/gate.ts";
 import { auditChain, hmacSigner } from "../src/receipt.ts";
 import type { Journal } from "../src/ports.ts";
 import type { State } from "../src/states.ts";
-import { eip3009Oracle, latchX402, type SettlementOracle, type X402Alarm } from "../src/x402/index.ts";
+import { eip3009Oracle, latchX402, type SettlementOracle, type SettlementProbe, type X402Alarm } from "../src/x402/index.ts";
 
 /**
  * The bridge, driven by the official x402 SDK on both sides: `@x402/fetch`
@@ -64,11 +64,13 @@ type Fault =
 
 /** The one fake: a token contract that remembers which authorizations were used. */
 function makeChain() {
-  const used = new Set<string>();
+  const used = new Map<string, string>();
   const key = (payer: string, nonce: string) => `${payer.toLowerCase()}:${nonce.toLowerCase()}`;
   return {
-    use: (payer: string, nonce: string) => used.add(key(payer, nonce)),
+    use: (payer: string, nonce: string) => used.set(key(payer, nonce), `0xtx${used.size + 1}`),
     has: (payer: string, nonce: string) => used.has(key(payer, nonce)),
+    /** The transaction that used this authorization, as a block explorer would show it. */
+    txOf: (payer: string, nonce: string) => used.get(key(payer, nonce)) ?? null,
     get size() {
       return used.size;
     },
@@ -93,7 +95,7 @@ type Auth = { from: string; nonce: string; validBefore: string };
 const authOf = (payload: { payload: Record<string, unknown> }) => payload.payload.authorization as Auth;
 
 /** One server process: its own SDK objects, handler and bridge, over a journal and chain that outlive it. */
-function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, opts: { oracle?: boolean; flow?: string; pid?: boolean; token?: boolean; replayWindowMs?: number; schemes?: string[]; conform?: boolean } = {}) {
+function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, opts: { oracle?: boolean; findTx?: boolean | "throws"; flow?: string; pid?: boolean; token?: boolean; replayWindowMs?: number; schemes?: string[]; conform?: boolean } = {}) {
   const { journal, chain, clock } = shared;
   const calls = { verify: 0, settle: 0 };
   const control = { fault: "none" as Fault, handlerRuns: 0, hold: undefined as Promise<void> | undefined };
@@ -121,12 +123,15 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
       if (control.fault === "lands_then_reports_failure") return failed("unexpected_settle_error");
       if (control.fault === "lands_then_throws") throw new Error("facilitator timed out");
       if (control.fault === "lands_then_hangs") return new Promise(() => {});
-      return { success: true, transaction: `0xtx${chain.size}`, network: requirements.network, payer: auth.from };
+      return { success: true, transaction: chain.txOf(auth.from, auth.nonce) ?? "", network: requirements.network, payer: auth.from };
     },
   };
 
   const server = new x402ResourceServer(facilitator).register(NETWORK, new ExactEvmScheme());
+  const probes: SettlementProbe[] = [];
   const oracle: SettlementOracle = async (probe) => (chain.has(probe.payer, probe.nonce) ? "settled" : "unsettled");
+  if (opts.findTx === "throws") oracle.findTransaction = async () => Promise.reject(new Error("rpc down"));
+  else if (opts.findTx !== false) oracle.findTransaction = async (probe) => (probes.push(probe), chain.txOf(probe.payer, probe.nonce));
   const latch = latchX402(server, {
     journal,
     clock,
@@ -173,7 +178,7 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
     return c.json({ answer: `answer to ${body.q ?? "?"}`, run });
   });
 
-  return { app, latch, calls, control, alarms };
+  return { app, latch, calls, control, alarms, probes };
 }
 type Instance = ReturnType<typeof instance>;
 
@@ -508,10 +513,32 @@ test("x402: a crash after the money moved is recovered by the sweep with no retr
   assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["delivered"]);
   assert.equal((await b.latch.chain()).length, 1, "and it is receipted");
 
+  // The facilitator's reply died with the process; the oracle found the transaction.
+  assert.equal((await b.latch.chain())[0]?.receipt.settlementRef, "0xtx1");
+  const delivered = (w.journal as ReturnType<typeof memoryJournal>).snapshotAll()[0]?.entries.find((e) => e.state === "delivered");
+  assert.equal(delivered?.evidence.reference, "0xtx1", "the report can link it");
+  assert.equal(delivered?.evidence.recovered, true);
+
   // The good is still there for the caller to collect.
   const collect = await post(b.app, { q: "a" }, header);
   assert.equal(collect.status, 200);
   assert.deepEqual(await collect.json(), { answer: "answer to a", run: 1 });
+});
+
+test("x402: a recovered payment whose transaction cannot be found is still delivered, with no reference", async () => {
+  for (const find of [false, "throws"] as const) {
+    const w = world({ findTx: find });
+    w.control.fault = "lands_then_hangs";
+    const header = await sign(w, { q: "a" });
+    void post(w.app, { q: "a" }, header);
+    for (let i = 0; i < 20; i++) await tick();
+
+    const b = w.boot();
+    w.clock.advance(STALE + 1);
+    assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["delivered"], `${find}: the outcome never depends on the lookup`);
+    assert.equal((await b.latch.chain())[0]?.receipt.settlementRef, null);
+    assert.equal(w.chain.size, 1);
+  }
 });
 
 test("x402: a crash mid-handler charges nothing and the sweep closes the claim", async () => {
@@ -962,6 +989,100 @@ test("oracle: anything short of an answer throws, so the bridge waits instead of
   await assert.rejects(oracle({ ...PROBE, network: "eip155:1" }), /no RPC URL/);
   await assert.rejects(oracle({ ...PROBE, method: "permit2" }), /cannot answer/);
   await assert.rejects(oracle({ ...PROBE, nonce: "0x01" }), /32 bytes/);
+});
+
+/**
+ * A pretend Base: block n has timestamp T0 + 2n, and one AuthorizationUsed
+ * event sits at `eventBlock`. Answers only the calls findTransaction makes.
+ */
+function chainRpc(eventBlock: number, eventTopics?: string[]) {
+  const HEAD = 100_000, T0 = 1_700_000_000;
+  const USED = "0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5";
+  const word = (h: string) => "0x" + h.slice(2).toLowerCase().padStart(64, "0");
+  const topics = eventTopics ?? [USED, word(PROBE.payer), PROBE.nonce];
+  const ranges: [number, number][] = [];
+  const fake = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { method, params } = JSON.parse(String(init?.body)) as { method: string; params: any[] };
+    let result: unknown;
+    if (method === "eth_getBlockByNumber") {
+      const n = params[0] === "latest" ? HEAD : parseInt(params[0], 16);
+      result = { number: "0x" + n.toString(16), timestamp: "0x" + (T0 + 2 * n).toString(16) };
+    } else if (method === "eth_getLogs") {
+      const lo = parseInt(params[0].fromBlock, 16), hi = parseInt(params[0].toBlock, 16);
+      ranges.push([lo, hi]);
+      const asked = params[0].topics as string[];
+      const match = asked.every((t, i) => t.toLowerCase() === topics[i]?.toLowerCase());
+      result = eventBlock >= lo && eventBlock <= hi && match
+        ? [{ blockNumber: "0x" + eventBlock.toString(16), transactionHash: WORD(0xbeef), topics, removed: false }]
+        : [];
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }));
+  }) as typeof fetch;
+  const at = (n: number) => (T0 + 2 * n) * 1000; // the time block n was made, in ms
+  return { fake, ranges, at, HEAD };
+}
+
+test("oracle: findTransaction finds the transaction that used the authorization, inside the payment's window", async () => {
+  const c = chainRpc(99_000);
+  const oracle = eip3009Oracle({ rpcUrls: { "eip155:8453": "u" }, fetch: c.fake });
+  // Seen at block 98,950; valid until block 99,100. The event is at 99,000.
+  const tx = await oracle.findTransaction!({ ...PROBE, openedAt: c.at(98_950), expiresAt: c.at(99_100) });
+  assert.equal(tx, WORD(0xbeef));
+  for (const [lo, hi] of c.ranges) {
+    assert.ok(hi - lo + 1 <= 200, "never asks for more than the RPC's range limit");
+    assert.ok(lo >= 98_900 && hi <= 99_150, `searches only near the payment's window, not ${lo}-${hi}`);
+  }
+});
+
+test("oracle: findTransaction still searches the recent blocks when openedAt is later than now", async () => {
+  // Found live: the journal's opening entry carries the expiry time, and a
+  // window starting there searched nothing. The bridge now passes the earliest
+  // entry; the oracle also clamps, so a bad openedAt cannot hide a fresh payment.
+  const c = chainRpc(100_000 - 10);
+  const oracle = eip3009Oracle({ rpcUrls: { "eip155:8453": "u" }, fetch: c.fake });
+  const tx = await oracle.findTransaction!({ ...PROBE, openedAt: c.at(c.HEAD + 150), expiresAt: c.at(c.HEAD + 150) });
+  assert.equal(tx, WORD(0xbeef));
+});
+test("x402: the oracle is told when the payment arrived, not when it expires", async () => {
+  // Both journals stamp the opening entry with the expiry time; a lookup
+  // window starting there would miss a payment that has already landed.
+  const w = world();
+  w.control.fault = "lands_then_hangs";
+  const header = await sign(w, { q: "a" });
+  const arrived = w.clock.now();
+  void post(w.app, { q: "a" }, header);
+  for (let i = 0; i < 20; i++) await tick();
+
+  const b = w.boot();
+  w.clock.advance(STALE + 1);
+  assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["delivered"]);
+  const probe = b.probes.at(-1);
+  assert.ok(probe?.openedAt !== undefined && probe.openedAt <= arrived + 1, `openedAt ${probe?.openedAt} should be the arrival ${arrived}`);
+  assert.ok(probe!.openedAt! < probe!.expiresAt);
+  assert.equal((await b.latch.chain())[0]?.receipt.settlementRef, "0xtx1");
+});
+
+test("oracle: findTransaction returns null rather than guess, and ignores an event for another nonce", async () => {
+  // Not in the window.
+  const far = chainRpc(50_000);
+  const o1 = eip3009Oracle({ rpcUrls: { "eip155:8453": "u" }, fetch: far.fake });
+  assert.equal(await o1.findTransaction!({ ...PROBE, openedAt: far.at(98_950), expiresAt: far.at(99_100) }), null);
+
+  // A window wider than maxLogCalls chunks is not searched at all.
+  const wide = chainRpc(99_000);
+  const o2 = eip3009Oracle({ rpcUrls: { "eip155:8453": "u" }, fetch: wide.fake, maxLogCalls: 2 });
+  assert.equal(await o2.findTransaction!({ ...PROBE, openedAt: wide.at(90_000), expiresAt: wide.at(99_100) }), null);
+  assert.equal(wide.ranges.length, 0);
+
+  // An RPC that returns an event for a different nonce is not believed.
+  const other = chainRpc(99_000, ["0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5", "0x" + PROBE.payer.slice(2).toLowerCase().padStart(64, "0"), WORD(7)]);
+  const lying = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.method === "eth_getLogs") body.params[0].topics[2] = WORD(7); // the fake answers for nonce 7
+    return other.fake(url, { ...init, body: JSON.stringify(body) });
+  }) as typeof fetch;
+  const o3 = eip3009Oracle({ rpcUrls: { "eip155:8453": "u" }, fetch: lying });
+  assert.equal(await o3.findTransaction!({ ...PROBE, openedAt: other.at(98_950), expiresAt: other.at(99_100) }), null);
 });
 
 // ── a caller that signs again while a settle is unresolved ────────────────
