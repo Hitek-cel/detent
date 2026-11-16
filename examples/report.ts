@@ -4,11 +4,11 @@
  *     npm run report            payments from `npm run example`
  *     npm run report:testnet    payments from `npm run example:testnet`
  *
- * Reads the database in `.latch-demo/`, writes one self-contained HTML file
+ * Reads the database in `.detent-demo/`, writes one self-contained HTML file
  * next to it, and opens it. Read-only: it changes nothing, and the page
  * loads nothing from the network.
  */
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { PGlite } from "@electric-sql/pglite";
@@ -16,8 +16,10 @@ import { journalReport } from "../src/report.ts";
 import type { SqlExecutor } from "../src/adapters/postgres-journal.ts";
 
 const LIVE = process.argv.includes("--testnet");
-const dir = LIVE ? ".latch-demo/db-testnet" : ".latch-demo/db-offline";
-const out = resolve(LIVE ? ".latch-demo/report-testnet.html" : ".latch-demo/report.html");
+// Detent was called Latch: carry an older demo folder across.
+if (!existsSync(".detent-demo") && existsSync(".latch-demo")) renameSync(".latch-demo", ".detent-demo");
+const dir = LIVE ? ".detent-demo/db-testnet" : ".detent-demo/db-offline";
+const out = resolve(LIVE ? ".detent-demo/report-testnet.html" : ".detent-demo/report.html");
 
 if (!existsSync(dir)) {
   console.log(`No payments recorded yet. Run \`npm run ${LIVE ? "example:testnet" : "example"}\` first.`);
@@ -32,7 +34,7 @@ const sql: SqlExecutor = {
   },
 };
 const html = await journalReport(sql, {
-  title: LIVE ? "Latch payments — Base Sepolia (test USDC)" : "Latch payments — offline demo (simulated chain)",
+  title: LIVE ? "Detent payments — Base Sepolia (test USDC)" : "Detent payments — offline demo (simulated chain)",
 });
 await db.close();
 writeFileSync(out, html);

@@ -1,7 +1,7 @@
 /**
  * The slice of the official x402 SDK this bridge touches, as structural types.
  *
- * Latch takes no dependency on `@x402/core`. These shapes are the fields the
+ * Detent takes no dependency on `@x402/core`. These shapes are the fields the
  * bridge reads and the values it returns; the SDK's own objects satisfy them,
  * and `test/x402.test.ts` typechecks and runs against the real packages so a
  * drift in the SDK fails the build rather than a seller's payments.
@@ -102,7 +102,7 @@ export type X402HookRegistry = {
 
 /** How the payment moves money, which decides how its fate can be checked later. */
 /**
- * The two methods of the SDK's `x402HTTPResourceServer` that `latch.http()`
+ * The two methods of the SDK's `x402HTTPResourceServer` that `detent.http()`
  * wraps. Method syntax on purpose, so the SDK's own class fits as it is.
  */
 export type X402HttpServer = {
@@ -121,7 +121,7 @@ export type SettlementProbe = {
   method: TransferMethod;
   /** Milliseconds. After this the payment can no longer land. */
   expiresAt: number;
-  /** Milliseconds. When Latch first saw this payment; it cannot have landed much earlier. */
+  /** Milliseconds. When Detent first saw this payment; it cannot have landed much earlier. */
   openedAt?: number;
 };
 

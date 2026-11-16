@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { LatchError } from "../src/errors.ts";
+import type { DetentError } from "../src/errors.ts";
 import { makeProof } from "../src/adapters/ledger-facilitator.ts";
 import { assertMoneyIsSound, makeWorld, PAYER, PRICE, stateOf, START_BALANCE } from "./harness.ts";
 
@@ -22,7 +22,7 @@ test("FREE SHOPPING: a failed settlement yields no goods", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: req }),
-    (err: LatchError) => err.code === "settlement_failed",
+    (err: DetentError) => err.code === "settlement_failed",
   );
 
   assert.equal(w.producer.calls, 0, "produced a good for an unpaid caller");
@@ -36,7 +36,7 @@ test("FREE SHOPPING: an empty wallet buys nothing", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: req }),
-    (err: LatchError) => err.code === "settlement_failed",
+    (err: DetentError) => err.code === "settlement_failed",
   );
 
   assert.equal(w.producer.calls, 0, "served a caller who could not pay");
@@ -68,7 +68,7 @@ test("SETTLEMENT DIVERGENCE: a thrown settle is treated as unknown, not as failu
   // Pending is genuinely undecided: park the invoice, never guess.
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: req }),
-    (err: LatchError) => err.code === "settlement_failed" && err.retryable === true,
+    (err: DetentError) => err.code === "settlement_failed" && err.retryable === true,
   );
   assert.equal(await stateOf(w, quote.invoiceId), "settling");
   assert.equal(w.producer.calls, 0);
@@ -109,7 +109,7 @@ test("REPLAY: a payment proof cannot be spent twice, even if the facilitator acc
       proof: second.proof,
       request: { prompt: "second" },
     }),
-    (err: LatchError) => err.code === "proof_replayed",
+    (err: DetentError) => err.code === "proof_replayed",
   );
 
   assert.equal(w.producer.calls, 1, "a replayed proof bought a second good");
@@ -198,7 +198,7 @@ test("a proof for a different invoice is rejected", async () => {
       proof: makeProof(a.quote),
       request: { prompt: "b" },
     }),
-    (err: LatchError) => err.code === "proof_invalid",
+    (err: DetentError) => err.code === "proof_invalid",
   );
   assert.equal(w.producer.calls, 0);
 });

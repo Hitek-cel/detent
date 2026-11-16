@@ -20,7 +20,7 @@ export type FailureCode =
   | "concurrent_attempt"
   | "needs_operator";
 
-export class LatchError extends Error {
+export class DetentError extends Error {
   readonly code: FailureCode;
   readonly retryable: boolean;
   readonly detail: Record<string, unknown>;
@@ -31,7 +31,7 @@ export class LatchError extends Error {
     options: { retryable?: boolean; detail?: Record<string, unknown> } = {},
   ) {
     super(message);
-    this.name = "LatchError";
+    this.name = "DetentError";
     this.code = code;
     this.retryable = options.retryable ?? false;
     this.detail = options.detail ?? {};
@@ -67,8 +67,8 @@ export function httpStatusFor(code: FailureCode): number {
   }
 }
 
-export function isLatchError(value: unknown): value is LatchError {
-  return value instanceof LatchError;
+export function isDetentError(value: unknown): value is DetentError {
+  return value instanceof DetentError;
 }
 
 /**

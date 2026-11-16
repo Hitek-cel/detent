@@ -22,18 +22,18 @@ None of this is exotic. These are retries and timeouts.
 
 ## What I built
 
-[Latch](../README.md) is a small library that plugs into the SDK's own lifecycle hooks and journals each step of a payment in Postgres, write-ahead. Route handlers don't change.
+[Detent](../README.md) is a small library that plugs into the SDK's own lifecycle hooks and journals each step of a payment in Postgres, write-ahead. Route handlers don't change.
 
 - **One claim per payment.** A payment is identified the way the chain identifies it: by payer and nonce. The claim is an atomic insert made after the facilitator verifies the payment and before the handler runs, so of any number of concurrent copies exactly one proceeds. Claiming after verification means junk headers can't fill the database.
 - **Store the response before asking for the money.** Whatever happens to the process next, a payment that lands has something to deliver.
-- **Never trust a failed settle.** On any failure, Latch asks the token contract directly — USDC's `authorizationState(payer, nonce)` is true exactly when that authorization moved money. If it did, the caller gets the stored response.
+- **Never trust a failed settle.** On any failure, Detent asks the token contract directly — USDC's `authorizationState(payer, nonce)` is true exactly when that authorization moved money. If it did, the caller gets the stored response.
 - **Recovery never charges.** A sweep finishes payments whose process died. It only learns what already happened: delivered if the chain says it settled, void once it can no longer land.
 
 ## The replay problem I didn't expect
 
 Giving a stored response back to "the same payment" sounds simple. It isn't, because a settled EIP-3009 payment is public. Its payer, nonce and signature are all in the settlement transaction's calldata. Anyone watching the chain could rebuild the payment header and ask for the response.
 
-So the payment can't be the proof. The 402 carries a fresh random token in a small server extension; the official client echoes server extensions back with its payment, and the token travels only inside TLS, never to the chain. A retry gets the stored response only by presenting it. For the re-signed-retry case, the SDK's `payment-identifier` extension does the job: a second signature under the same identifier is refused while the first is unresolved, and answered from the store once it settles. That holds only if the client reuses the identifier for the same purchase, deriving it from an order or invoice id; the stock client sends none, and generating a fresh random one per call protects nothing. After someone pointed that out by running the demo, Latch gained a small `purchasePaymentId(orderId)` helper for the buyer's side, and the demo now shows a buyer told "failed" signing again for the same order without being charged twice.
+So the payment can't be the proof. The 402 carries a fresh random token in a small server extension; the official client echoes server extensions back with its payment, and the token travels only inside TLS, never to the chain. A retry gets the stored response only by presenting it. For the re-signed-retry case, the SDK's `payment-identifier` extension does the job: a second signature under the same identifier is refused while the first is unresolved, and answered from the store once it settles. That holds only if the client reuses the identifier for the same purchase, deriving it from an order or invoice id; the stock client sends none, and generating a fresh random one per call protects nothing. After someone pointed that out by running the demo, Detent gained a small `purchasePaymentId(orderId)` helper for the buyer's side, and the demo now shows a buyer told "failed" signing again for the same order without being charged twice.
 
 ## Killing the server at every write
 
@@ -47,7 +47,7 @@ All 48 hold, along with 130 tests overall.
 
 ## Then I ran it for real
 
-`npm run example:testnet` starts a real server on localhost, protects it with Latch, and pays it with the official client on Base Sepolia through the public x402 facilitator, with free test USDC. It runs a normal purchase, a lost reply, three concurrent copies and a server that dies right after the money moves. The buyer's balance went from 20.00 to 19.97 test USDC: exactly three charges for three purchases. The retry, the duplicates and the crash recovery moved nothing extra. A second run, with the extra step for a buyer who signs again for the same order, took the balance from 19.97 to 19.93: four charges for four purchases.
+`npm run example:testnet` starts a real server on localhost, protects it with Detent, and pays it with the official client on Base Sepolia through the public x402 facilitator, with free test USDC. It runs a normal purchase, a lost reply, three concurrent copies and a server that dies right after the money moves. The buyer's balance went from 20.00 to 19.97 test USDC: exactly three charges for three purchases. The retry, the duplicates and the crash recovery moved nothing extra. A second run, with the extra step for a buyer who signs again for the same order, took the balance from 19.97 to 19.93: four charges for four purchases.
 
 It hasn't handled real money. Nothing here has run on mainnet or in production.
 
@@ -60,15 +60,15 @@ I reported the findings to the x402 project, and that turned out to be the most 
 
 ## Limits
 
-Latch covers the `exact` scheme on the SDK's default flow. It can only replay JSON or HTML responses. Without the `payment-identifier` extension declared, it can't tell a re-signed purchase from a new one. The full list is in the [README](../README.md#limits).
+Detent covers the `exact` scheme on the SDK's default flow. It can only replay JSON or HTML responses. Without the `payment-identifier` extension declared, it can't tell a re-signed purchase from a new one. The full list is in the [README](../README.md#limits).
 
 ## Try it
 
 ```bash
-git clone https://github.com/Hitek-cel/latch402 && cd latch402 && npm install
+git clone https://github.com/Hitek-cel/detent && cd detent && npm install
 npm run example
 ```
 
-It takes about a minute and needs no network, keys or wallet. If you run an x402 server and Latch breaks on your traffic, that report is worth more to me than a star.
+It takes about a minute and needs no network, keys or wallet. If you run an x402 server and Detent breaks on your traffic, that report is worth more to me than a star.
 
-*I used an AI coding assistant to help build Latch and write this post. I've reviewed the code, run the tests, and run the live demo myself.*
+*I used an AI coding assistant to help build Detent and write this post. I've reviewed the code, run the tests, and run the live demo myself.*

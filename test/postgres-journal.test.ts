@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 
-import { Latch } from "../src/gate.ts";
+import { Detent } from "../src/gate.ts";
 import { postgresJournal, migrate, listStuck, type SqlClient, type SqlExecutor } from "../src/adapters/postgres-journal.ts";
 import { ledgerFacilitator, makeProof } from "../src/adapters/ledger-facilitator.ts";
 import { auditChain, hmacSigner } from "../src/receipt.ts";
@@ -231,7 +231,7 @@ function gateOver(
   opts: { fail?: boolean; credit?: { maxOutstandingMicros: number } } = {},
 ) {
   let produced = 0;
-  const gate = new Latch<{ prompt: string }, { answer: string }>(
+  const gate = new Detent<{ prompt: string }, { answer: string }>(
     { payTo: SELLER, produceTimeoutMs: 2_000, credit: opts.credit },
     {
       journal,

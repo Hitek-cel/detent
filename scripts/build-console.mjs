@@ -24,8 +24,8 @@ const template = await readFile(join(root, "web/template.html"), "utf8");
 if (!template.includes("/*BUNDLE*/")) throw new Error("template lost its bundle marker");
 const html = template.replace("/*BUNDLE*/", () => js);
 
-const out = join(root, "web/latch-console.html");
+const out = join(root, "web/detent-console.html");
 await writeFile(out, html, "utf8");
 
 const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
-console.log(`built web/latch-console.html  (${kb} KB, self-contained)`);
+console.log(`built web/detent-console.html  (${kb} KB, self-contained)`);

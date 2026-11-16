@@ -2,11 +2,11 @@
 // package's own export map, with no TypeScript loader involved.
 import assert from "node:assert/strict";
 
-const core = await import("latch402");
-const x402 = await import("latch402/x402");
-const conformance = await import("latch402/conformance");
+const core = await import("detent");
+const x402 = await import("detent/x402");
+const conformance = await import("detent/conformance");
 
-const gate = new core.Latch(
+const gate = new core.Detent(
   { payTo: "0xseller" },
   {
     journal: core.memoryJournal(),
@@ -18,7 +18,7 @@ const gate = new core.Latch(
 const { quote } = await gate.quote({ payer: "agt", sku: "s", amountMicros: 1000, request: { q: 1 } });
 assert.match(quote.invoiceId, /^inv_/);
 
-assert.equal(typeof x402.latchX402, "function");
+assert.equal(typeof x402.detentX402, "function");
 assert.equal(typeof x402.eip3009Oracle, "function");
 assert.equal(typeof x402.postgresAuthorizedPaymentStorage, "function");
 assert.match(

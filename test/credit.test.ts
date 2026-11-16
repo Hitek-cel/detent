@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { LatchError } from "../src/errors.ts";
+import type { DetentError } from "../src/errors.ts";
 import {
   assertMoneyIsSound,
   crashingJournal,
@@ -38,7 +38,7 @@ test("without a credit policy, a batched payment waits — no compute before mon
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: req }),
-    (e: LatchError) => e.code === "settlement_failed" && e.retryable === true,
+    (e: DetentError) => e.code === "settlement_failed" && e.retryable === true,
   );
   assert.equal(await stateOf(w, quote.invoiceId), "settling");
   assert.equal(w.producer.calls, 0, "compute was spent before the money was final");
@@ -113,7 +113,7 @@ test("credit is bounded: past the limit the gate waits instead of fronting", asy
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: two.quote.invoiceId, payer: PAYER, proof: two.proof, request: { prompt: "two" } }),
-    (e: LatchError) => e.code === "settlement_failed" && e.retryable === true,
+    (e: DetentError) => e.code === "settlement_failed" && e.retryable === true,
     "a sale past the limit must wait, not error terminally",
   );
   assert.equal(await stateOf(w, two.quote.invoiceId), "settling");
@@ -138,7 +138,7 @@ test("the per-caller limit is enforced independently of the total", async () => 
   await w.gate.redeem({ invoiceId: one.quote.invoiceId, payer: PAYER, proof: one.proof, request: { prompt: "one" } });
   await assert.rejects(
     w.gate.redeem({ invoiceId: two.quote.invoiceId, payer: PAYER, proof: two.proof, request: { prompt: "two" } }),
-    (e: LatchError) => e.retryable === true,
+    (e: DetentError) => e.retryable === true,
   );
   assert.equal(w.producer.calls, 1, "one caller exceeded its own credit limit");
 });
@@ -168,7 +168,7 @@ test("production failing on credit, batch lands: the payment comes back", async 
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: req }),
-    (e: LatchError) => e.code === "producer_failed",
+    (e: DetentError) => e.code === "producer_failed",
   );
   assert.equal(await stateOf(w, quote.invoiceId), "abandoning");
   assert.equal(w.facilitator.balanceOf(PAYER), START_BALANCE, "nothing has moved yet");

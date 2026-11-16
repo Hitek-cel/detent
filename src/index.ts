@@ -1,7 +1,7 @@
-export { Latch } from "./gate.ts";
+export { Detent } from "./gate.ts";
 export type { GateConfig, GateDeps, PaymentRequired, RedeemResult } from "./gate.ts";
 
-export { LatchError, JournalConflictError, httpStatusFor, isLatchError } from "./errors.ts";
+export { DetentError, JournalConflictError, httpStatusFor, isDetentError } from "./errors.ts";
 export type { FailureCode } from "./errors.ts";
 
 export {

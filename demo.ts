@@ -6,12 +6,12 @@
  * failures that would be expensive or impossible to stage for real.
  */
 
-import { Latch } from "./src/gate.ts";
+import { Detent } from "./src/gate.ts";
 import { memoryJournal } from "./src/adapters/memory-journal.ts";
 import { ledgerFacilitator, makeProof } from "./src/adapters/ledger-facilitator.ts";
 import { auditChain, hmacSigner } from "./src/receipt.ts";
 import { formatUsd } from "./src/money.ts";
-import { isLatchError } from "./src/errors.ts";
+import { isDetentError } from "./src/errors.ts";
 import type { Journal } from "./src/ports.ts";
 
 const BUYER = "agt_scout7";
@@ -36,7 +36,7 @@ function makeGate(opts: { journal?: Journal; failProducer?: boolean; onProduce?:
   let producerCalls = 0;
 
   const build = (j: Journal) =>
-    new Latch<Req, Res>(
+    new Detent<Req, Res>(
       { payTo: SELLER, produceTimeoutMs: 5_000 },
       {
         journal: j,
@@ -213,7 +213,7 @@ rule("4. The attack: money moved, but the network reported failure");
 
   line("    settle() returns { ok: false } — but the funds really moved.");
   line("    A gate that believes the return value records 'nothing happened'");
-  line("    on top of a real charge. Latch asks the network instead.");
+  line("    on top of a real charge. Detent asks the network instead.");
   line();
 
   const out = await w.gate.redeem({
@@ -250,7 +250,7 @@ rule("5. When delivery fails, the money goes back");
       request: { prompt: "break it" },
     });
   } catch (err) {
-    if (isLatchError(err)) line(`    -> ${err.code}: ${err.message}`);
+    if (isDetentError(err)) line(`    -> ${err.code}: ${err.message}`);
   }
 
   const snap = await w.journal.get(quote.invoiceId);

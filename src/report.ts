@@ -4,11 +4,11 @@ import type { Quote } from "./ports.ts";
 /**
  * A read-only dashboard of a Postgres journal, as one self-contained HTML page.
  *
- * Every payment Latch handled is already in the journal: when it arrived, each
+ * Every payment Detent handled is already in the journal: when it arrived, each
  * step it went through, whether money moved, how it ended. This turns that into
  * something a person can look at and work with — headline numbers, where
  * payments ended, activity over time, what sold, who bought, the recoveries
- * Latch made, and every payment with its step-by-step timeline. Filters scope
+ * Detent made, and every payment with its step-by-step timeline. Filters scope
  * the whole page, the table sorts and exports to CSV, and the theme follows
  * the system or the viewer's choice.
  *
@@ -142,7 +142,7 @@ export async function journalReportData(sql: SqlExecutor, options: JournalReport
   });
 
   return {
-    title: options.title ?? "Latch payments",
+    title: options.title ?? "Detent payments",
     generatedAt: options.now ?? Date.now(),
     assetSymbol: options.assetSymbol ?? "USDC",
     assetDecimals: options.assetDecimals ?? 6,
@@ -245,7 +245,7 @@ footer{color:var(--muted);font-size:12px;margin-top:24px}
 const SCRIPT = String.raw`
 (function () {
   "use strict";
-  var DATA = JSON.parse(document.getElementById("latch-data").textContent);
+  var DATA = JSON.parse(document.getElementById("detent-data").textContent);
   var root = document.documentElement;
   var SVG = "http://www.w3.org/2000/svg";
   var $ = function (id) { return document.getElementById(id); };
@@ -273,7 +273,7 @@ const SCRIPT = String.raw`
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
 
   // ---- theme: follows the system until the viewer picks one ----------------
-  var THEME_KEY = "latch-report-theme";
+  var THEME_KEY = "detent-report-theme";
   function setTheme(t, save) {
     if (t === "light" || t === "dark") root.setAttribute("data-theme", t); else { t = "auto"; root.removeAttribute("data-theme"); }
     var buttons = document.querySelectorAll("[data-theme-set]");
@@ -601,7 +601,7 @@ const SCRIPT = String.raw`
       lines.push([iso(p.createdAt), p.id, p.kind, p.payer, p.route, money(p.amount).replace(/,/g, ""), SYM, p.outcome,
         p.steps.map(function (s) { return s.state; }).filter(function (s) { return s !== "quoted"; }).join(" > "), p.reference, p.recovered ? "yes" : "no", p.settleAttempts].map(cell).join(","));
     });
-    var a = el("a", { href: URL.createObjectURL(new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8" })), download: "latch-payments-" + iso(DATA.generatedAt).slice(0, 10) + ".csv" });
+    var a = el("a", { href: URL.createObjectURL(new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8" })), download: "detent-payments-" + iso(DATA.generatedAt).slice(0, 10) + ".csv" });
     document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
@@ -656,14 +656,14 @@ export async function journalReport(sql: SqlExecutor, options: JournalReportOpti
 ${refresh}
 <title>${esc(data.title)}</title>
 <style>${STYLE}</style>
-<script>try{var t=localStorage.getItem("latch-report-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<script>try{var t=localStorage.getItem("detent-report-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 </head>
 <body>
 <main>
 <div class="top">
 <div>
 <h1>${esc(data.title)}</h1>
-<p>From the Latch journal · generated ${esc(generated)} UTC${data.truncated ? ` · the ${data.payments.length.toLocaleString("en-US")} most recent payments` : ""}</p>
+<p>From the Detent journal · generated ${esc(generated)} UTC${data.truncated ? ` · the ${data.payments.length.toLocaleString("en-US")} most recent payments` : ""}</p>
 </div>
 <div class="seg" role="group" aria-label="Theme">
 <button type="button" data-theme-set="auto" aria-pressed="true">Auto</button>
@@ -735,7 +735,7 @@ ${refresh}
 
 <section aria-labelledby="h-rec">
 <h2 id="h-rec">Recoveries</h2>
-<p class="sub">Work Latch did that a server without it would have lost or done twice.</p>
+<p class="sub">Work Detent did that a server without it would have lost or done twice.</p>
 <div class="stats" id="stats"></div>
 </section>
 
@@ -758,7 +758,7 @@ ${refresh}
 
 <footer>Read-only. This page loads nothing from the network; links open the block explorer only when you click them.</footer>
 </main>
-<script id="latch-data" type="application/json">${json}</script>
+<script id="detent-data" type="application/json">${json}</script>
 <script>${SCRIPT}</script>
 </body>
 </html>

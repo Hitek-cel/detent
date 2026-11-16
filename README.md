@@ -1,4 +1,8 @@
-# Latch
+# Detent
+
+*Formerly **Latch** (`latch402` on npm). Renamed because another x402 project,
+the @latch402 readiness scanner for OKX.AI, had the name first. Same code, same
+promise; see [Moving from latch402](#moving-from-latch402).*
 
 **Settlement safety for x402.** One promise, enforced:
 
@@ -12,7 +16,7 @@ What is *not* finished is the join between "the money moved" and "the customer
 was served". The official SDK keeps a payment's state in process memory, which
 is enough until something goes wrong in between: a crash, a lost response, a
 settle that reports failure after it broadcast, three copies of one payment
-arriving at once. Latch makes that state durable, through the SDK's own
+arriving at once. Detent makes that state durable, through the SDK's own
 lifecycle hooks.
 
 ## Status
@@ -30,7 +34,7 @@ lifecycle hooks.
   for the same order and the crash recovery moved nothing extra.
 - **It has also run live through PayAI's facilitator** (2026-11-16):
   `node examples/x402-demo.ts --testnet --facilitator payai`. Same steps, same
-  result, four charges for four purchases, all settled by PayAI. Latch is not
+  result, four charges for four purchases, all settled by PayAI. Detent is not
   affiliated with or endorsed by PayAI; using any facilitator means accepting
   its terms.
 - **It has not handled real money.** Nothing here has run on mainnet or in
@@ -41,10 +45,10 @@ lifecycle hooks.
   0.9, §5.1(6)–(7), controls 9 and 11). A payment that is still being processed
   is answered `409 operation_in_flight` ("retry this same payment"), and one
   that is stuck `503 payment_unresolved`, never a 402 that invites a second
-  signature. That needs `latch.http()`; see below.
+  signature. That needs `detent.http()`; see below.
 
 If you try it and it breaks, that report is worth more to this project than a
-star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
+star. [Open an issue.](https://github.com/Hitek-cel/detent/issues)
 
 The story behind it — what the official SDK does on its own, what broke, and
 what changed upstream — is in [docs/writeup.md](docs/writeup.md).
@@ -52,11 +56,11 @@ what changed upstream — is in [docs/writeup.md](docs/writeup.md).
 ## See it work
 
 ```bash
-git clone https://github.com/Hitek-cel/latch402 && cd latch402 && npm install
+git clone https://github.com/Hitek-cel/detent && cd detent && npm install
 npm run example
 ```
 
-This starts a real HTTP server on `127.0.0.1`, protects it with Latch over an
+This starts a real HTTP server on `127.0.0.1`, protects it with Detent over an
 in-process PostgreSQL, and pays it with the official x402 client. Then it
 breaks things on purpose: a lost reply, three copies of one payment, a buyer
 told "failed" who signs again for the same order, and a server that dies right
@@ -65,17 +69,17 @@ wallet.
 
 `npm run example:testnet` runs the same steps live on Base Sepolia,
 through the public x402 facilitator, with free test USDC. It creates a
-throwaway wallet in `.latch-demo/` (ignored by git) and tells you how to fund
+throwaway wallet in `.detent-demo/` (ignored by git) and tells you how to fund
 it from Circle's faucet. It refuses any network but Base Sepolia and prints
 every request it makes.
 
 ## See your payments
 
 In your own app, the dashboard comes from one call against your Postgres
-journal (the same `sql` Latch already uses):
+journal (the same `sql` Detent already uses):
 
 ```ts
-import { journalReport, journalReportData } from "latch402";
+import { journalReport, journalReportData } from "detent";
 
 const html = await journalReport(sql, { title: "Payments", refreshSeconds: 60 });
 const data = await journalReportData(sql); // the same data as plain objects, to build on
@@ -97,7 +101,7 @@ What the page shows:
 - **Headline numbers**: collected, payments, buyers, median time to deliver,
   and anything that needs a human.
 - **Where every payment ended**, activity over time, what sold by route, top
-  buyers, and the recoveries Latch made.
+  buyers, and the recoveries Detent made.
 - **Every payment**, sortable, with a step-by-step timeline when you click a
   row and a link to its settlement on the block explorer.
 - **Filters** for time range, outcome and free-text search that scope the
@@ -110,15 +114,15 @@ and a Content-Security-Policy forbids it from trying.
 ## Use it with the official SDK
 
 ```bash
-npm install latch402 @x402/extensions
+npm install detent @x402/extensions
 ```
 
 ```ts
 import { paymentMiddlewareFromHTTPServer, x402HTTPResourceServer, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { migrate, postgresJournal } from "latch402";
-import { eip3009Oracle, latchX402 } from "latch402/x402";
+import { migrate, postgresJournal } from "detent";
+import { eip3009Oracle, detentX402 } from "detent/x402";
 import { PAYMENT_IDENTIFIER, declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
 
 await migrate(sql); // once at deploy; safe to re-run
@@ -126,40 +130,40 @@ await migrate(sql); // once at deploy; safe to re-run
 const server = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL }))
   .register("eip155:8453", new ExactEvmScheme());
 
-const latch = latchX402(server, {
+const detent = detentX402(server, {
   journal: postgresJournal(sql),
   // Asks the token contract whether a payment landed. See "Never trust a failed settle".
   oracle: eip3009Oracle({ rpcUrls: { "eip155:8453": BASE_RPC_URL } }),
-  onAlarm: (alarm) => console.error("latch", alarm),
+  onAlarm: (alarm) => console.error("detent", alarm),
 });
 
 const httpServer = new x402HTTPResourceServer(server, {
   "POST /answer": {
     accepts: { scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: PAY_TO },
-    // latch: collect a paid response again after a lost reply or a crash.
+    // detent: collect a paid response again after a lost reply or a crash.
     // payment-identifier: a re-signed retry is never charged twice, if the client
     // sends the same identifier for the same purchase (see Limits).
-    extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
+    extensions: { ...detent.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
   },
 });
 
-// latch.http(): a payment still being processed gets 409 operation_in_flight
+// detent.http(): a payment still being processed gets 409 operation_in_flight
 // ("retry this same payment") instead of a 402 payment challenge.
-app.use(paymentMiddlewareFromHTTPServer(latch.http(httpServer)));
+app.use(paymentMiddlewareFromHTTPServer(detent.http(httpServer)));
 
 // Finishes payments whose process died. Run it in every instance; it is safe to race.
-setInterval(() => latch.sweep().catch(console.error), 30_000);
+setInterval(() => detent.sweep().catch(console.error), 30_000);
 ```
 
 That is the whole integration. Your route handlers do not change. `sql` is a
 two-method shape (`query`, `transaction`) that `pg`, `postgres.js` and PGlite
-each wrap in about ten lines, so Latch has **no runtime dependencies** and you
+each wrap in about ten lines, so Detent has **no runtime dependencies** and you
 keep your own driver. The hooks live on `x402ResourceServer`, so the Express
 and Next adapters get the same behaviour; the tests here drive Hono.
 
-`latch.http()` wraps the SDK's `x402HTTPResourceServer` (the object every
+`detent.http()` wraps the SDK's `x402HTTPResourceServer` (the object every
 adapter's `paymentMiddlewareFromHTTPServer` takes) and returns the same
-server. It rewrites only the refusals Latch itself made as "still in flight";
+server. It rewrites only the refusals Detent itself made as "still in flight";
 every other answer passes through untouched. The 409 looks like this:
 
 ```http
@@ -180,9 +184,9 @@ but those refusals go out as `402 payment_in_progress`.
 ## What changes
 
 Each row is a test in `test/x402.test.ts`, run against the real SDK packages.
-The middle column is what those same tests observe with Latch switched off.
+The middle column is what those same tests observe with Detent switched off.
 
-| What happens | SDK alone | With Latch |
+| What happens | SDK alone | With Detent |
 |---|---|---|
 | Three copies of one payment arrive together | the handler runs three times | it runs once; the others get `409 operation_in_flight` |
 | A settle fails while the payment could still land | a 402, inviting a second signature | `409 operation_in_flight`: retry the same payment, which finishes it |
@@ -203,7 +207,7 @@ good is collectable, and never twice.
 The SDK's default flow is *verify → run the handler → settle → release the
 response*. The handler runs before any money moves and its response is held
 back until the settle lands. So nothing ever needs refunding; what needs
-protecting is the record. Latch journals each step, write-ahead, and every
+protecting is the record. Detent journals each step, write-ahead, and every
 write is a compare-and-set:
 
 ```mermaid
@@ -232,7 +236,7 @@ written to the journal before the settle is requested. Whatever happens to the
 process next, a payment that lands has something to deliver.
 
 **Never trust a failed settle.** A settle can broadcast and then time out, or
-land and lose its response. On any failure Latch asks an oracle instead of
+land and lose its response. On any failure Detent asks an oracle instead of
 believing the facilitator. `eip3009Oracle` is one read-only `eth_call` to the
 token contract: `authorizationState(payer, nonce)` is true exactly when that
 authorization moved money. If it did, the caller gets the response. If it did
@@ -251,7 +255,7 @@ facilitator, can finish a settle that never went out.
 **A stored response is not a free copy.** Everything in a settled EIP-3009
 payment — payer, nonce, signature — is in the settlement transaction's
 calldata, on a public chain. So "the same payment again" proves nothing. The
-`latch` extension puts a fresh random token in each 402; the SDK's client
+`detent` extension puts a fresh random token in each 402; the SDK's client
 echoes it back with the payment; it travels only inside TLS and never reaches
 the chain. A retry gets the stored response only by presenting it. A new
 signature under an existing `payment-identifier` is verified by the facilitator
@@ -271,7 +275,7 @@ it landed is neither voided (which could hide a charge) nor marked delivered
 | `staleMs` | 120 s | How long a claim may sit before its worker is presumed dead. Must exceed your slowest handler plus the facilitator timeout. |
 | `replayWindowMs` | 10 min | How long a paid response stays collectable. `0` turns replay off. |
 | `maxResponseBytes` | 256 KiB | Larger responses settle normally but are not stored for replay. |
-| `schemes` | `["exact"]` | Schemes Latch journals. Others pass through untouched. |
+| `schemes` | `["exact"]` | Schemes Detent journals. Others pass through untouched. |
 | `onAlarm` | none | `settled_unrecorded`, `settlement_unresolved`, `stuck`, `journal_error`. Wire it to your pager. |
 
 ### `auth-capture`
@@ -284,7 +288,7 @@ capture or must void.
 
 ```ts
 import { AuthCaptureEvmScheme } from "@x402/evm/auth-capture/server";
-import { migrateAuthCapture, postgresAuthorizedPaymentStorage } from "latch402/x402";
+import { migrateAuthCapture, postgresAuthorizedPaymentStorage } from "detent/x402";
 
 await migrateAuthCapture(sql);
 new AuthCaptureEvmScheme({ storage: postgresAuthorizedPaymentStorage(sql) });
@@ -297,7 +301,7 @@ escrow contract.
 
 ## Limits
 
-- **One flow.** Latch journals `exact` on the `authorization` flow (the
+- **One flow.** Detent journals `exact` on the `authorization` flow (the
   default). A covered route configured to settle *before* its handler
   (`upfront`) is refused, uncharged: the SDK fires no hook when such a handler
   succeeds, so delivery cannot be observed there.
@@ -308,10 +312,10 @@ escrow contract.
 - **Replay returns JSON or HTML, with status 200.** That is what the SDK's
   replay path can carry. Other content types settle once and are recorded, but
   a retry gets `402 payment_already_used`.
-- **Replay needs the token.** The route must declare `latch.declare()` and the
+- **Replay needs the token.** The route must declare `detent.declare()` and the
   client must echo server extensions. The official client does.
 - **Declare `payment-identifier`, and have the client derive the identifier
-  from the purchase.** When a settle's outcome is still unknown, `latch.http()`
+  from the purchase.** When a settle's outcome is still unknown, `detent.http()`
   tells the caller to retry the same payment. Without it the caller gets the
   SDK's 402, which invites a new signature, and a client may sign again anyway.
   If the first payment then lands, that is two charges for one purchase — each
@@ -320,13 +324,13 @@ escrow contract.
   the same identifier is refused until the first is resolved. That only helps
   if the retry carries the **same** identifier: the stock client sends none,
   and `appendPaymentIdentifierToExtensions(extensions)` called without an id
-  generates a fresh random one each time, which Latch sees as a new purchase.
+  generates a fresh random one each time, which Detent sees as a new purchase.
   Derive it from something stable, such as an order or invoice id.
   `purchasePaymentId` does that for the buyer's side:
 
   ```ts
   import { appendPaymentIdentifierToExtensions } from "@x402/extensions/payment-identifier";
-  import { purchasePaymentId } from "latch402/x402";
+  import { purchasePaymentId } from "detent/x402";
 
   const payload = await client.createPaymentPayload(paymentRequired);
   appendPaymentIdentifierToExtensions(payload.extensions ?? {}, purchasePaymentId(orderId));
@@ -335,7 +339,7 @@ escrow contract.
   Same order, same identifier, on every retry and after a restart. If order ids
   can repeat across buyers, pass your wallet address too:
   `purchasePaymentId(walletAddress, orderId)`.
-  Without a stable identifier, Latch cannot tell a re-signed purchase from a
+  Without a stable identifier, Detent cannot tell a re-signed purchase from a
   new one. (Thanks to [Selliksss](https://github.com/Selliksss), who caught
   this by running the demo.)
 - **A request is method, path and query.** The body is not part of what a
@@ -348,7 +352,7 @@ escrow contract.
   The oracle is only as honest as the RPC endpoint you give it.
 - **Amounts must fit a safe integer** of atomic units. That is 9 billion USDC;
   an 18-decimal token overflows at 0.009 of a token and is refused.
-- **Pinned to SDK behaviour.** Latch relies on the SDK passing one payload
+- **Pinned to SDK behaviour.** Detent relies on the SDK passing one payload
   object through every hook of a request, and on its hook order. Both are
   pinned by tests against 2.30 and 2.31; a future SDK that changes them fails the
   build here, not your payments silently.
@@ -359,7 +363,7 @@ escrow contract.
 run a real PostgreSQL in-process via PGlite.
 
 - **The bridge against the real SDK** — `@x402/fetch` signs real EIP-3009
-  payments, `@x402/hono` serves them, and no test calls a Latch hook directly.
+  payments, `@x402/hono` serves them, and no test calls a Detent hook directly.
   Crash injection at every journal write; replay, forgery and
   `payment-identifier` races; a journal that goes down before the claim, before
   the settle and after it; the same suite over Postgres.
@@ -380,7 +384,7 @@ npm run demo      # a narrated walkthrough of the strict gate
 
 ## The strict gate
 
-Latch began as a gate of its own, and that gate is still here: `quote()` opens
+Detent began as a gate of its own, and that gate is still here: `quote()` opens
 a priced invoice, `redeem()` takes a payment proof and either delivers or
 leaves the caller uncharged. It settles **before** it produces and refunds if
 production fails, which is the order to use on a rail where you control both
@@ -392,9 +396,9 @@ bridge above. The gate remains the reference for the state machine, the place
 the port contracts are defined, and the right tool for a non-x402 rail.
 
 ```ts
-import { Latch, memoryJournal, hmacSigner } from "latch402";
+import { Detent, memoryJournal, hmacSigner } from "detent";
 
-const gate = new Latch<{ prompt: string }, { answer: string }>(
+const gate = new Detent<{ prompt: string }, { answer: string }>(
   { payTo: process.env.PAY_TO!, produceTimeoutMs: 12_000 },
   {
     journal: memoryJournal(),      // swap for postgresJournal(sql) in production
@@ -457,7 +461,7 @@ then has to choose between waiting for the batch and serving the caller on
 credit. **Waiting is the default.** Serving early is opt-in and bounded:
 
 ```ts
-new Latch({ payTo, credit: { maxOutstandingMicros: 5_000_000, maxPerPayerMicros: 500_000 } }, deps);
+new Detent({ payTo, credit: { maxOutstandingMicros: 5_000_000, maxPerPayerMicros: 500_000 } }, deps);
 ```
 
 Credit relaxes only the seller's half of the promise — *delivered implies
@@ -476,7 +480,7 @@ The port contracts are executable, and each rule states what breaking it costs
 in production:
 
 ```ts
-import { runJournalConformance, runFacilitatorConformance, formatReport } from "latch402/conformance";
+import { runJournalConformance, runFacilitatorConformance, formatReport } from "detent/conformance";
 
 const report = await runJournalConformance({ create: async () => myJournal() });
 console.log(formatReport(report, "myJournal"));
@@ -506,7 +510,7 @@ with another's proof (`F10`/`F11`), refunded settlements that never happened
 ## Postgres
 
 ```ts
-import { postgresJournal, migrate } from "latch402";
+import { postgresJournal, migrate } from "detent";
 
 await migrate(sql);
 const journal = postgresJournal(sql);
@@ -534,6 +538,23 @@ each sweeps only its own invoices.
 - This is the seller's side of the seam. The buyer's side — spend policy,
   budget ceilings, an audit trail of what your agents bought — is the mirror
   image and is not built here.
+
+## Moving from latch402
+
+Detent is `latch402` 0.5.0 under a new name, plus the changes in the
+[CHANGELOG](CHANGELOG.md). Your journal needs nothing: the database tables keep
+their `latch_` names, so an existing Postgres journal and its receipts carry
+over as they are.
+
+| latch402 | detent |
+|---|---|
+| `npm install latch402` | `npm install detent` |
+| `"latch402"`, `"latch402/x402"`, `"latch402/conformance"` | `"detent"`, `"detent/x402"`, `"detent/conformance"` |
+| `latchX402(server, options)` | `detentX402(server, options)` |
+| `X402Latch`, `X402LatchOptions` | `X402Detent`, `X402DetentOptions` |
+| `LatchError`, `isLatchError` | `DetentError`, `isDetentError` |
+| error codes `latch_unavailable`, `latch_unsupported_payment` | `detent_unavailable`, `detent_unsupported_payment` |
+| demo folder `.latch-demo/` | `.detent-demo/` (the demo moves it for you) |
 
 ## License
 

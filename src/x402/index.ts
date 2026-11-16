@@ -1,5 +1,5 @@
-export { latchX402, x402InvoiceId } from "./bridge.ts";
-export type { X402Alarm, X402Latch, X402LatchOptions } from "./bridge.ts";
+export { detentX402, x402InvoiceId } from "./bridge.ts";
+export type { X402Alarm, X402Detent, X402DetentOptions } from "./bridge.ts";
 export { eip3009Oracle } from "./oracle.ts";
 export type {
   SettlementOracle,

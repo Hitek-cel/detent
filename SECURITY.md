@@ -1,6 +1,6 @@
 # Security
 
-Latch sits between a payment and a delivery. A bug here can charge someone for
+Detent sits between a payment and a delivery. A bug here can charge someone for
 nothing or give paid work away, so reports are taken seriously.
 
 ## Reporting a vulnerability
@@ -27,23 +27,23 @@ for. In particular:
   never settled;
 - a way to fill the journal without a verified payment.
 
-## What Latch assumes
+## What Detent assumes
 
 These are the conditions its guarantees rest on. Breaking one is a deployment
-problem rather than a vulnerability in Latch, but if the documentation led you
+problem rather than a vulnerability in Detent, but if the documentation led you
 into it, that is worth a report too.
 
 - **The journal is durable and honest.** `append` must be write-ahead and
   compare-and-set. The conformance kit checks an adapter against the contract.
 - **The oracle's RPC endpoint is trusted.** A node that lies about
-  `authorizationState` can make Latch deliver unpaid work or void a real
+  `authorizationState` can make Detent deliver unpaid work or void a real
   charge. Use an endpoint you would trust with that decision.
 - **Transport is TLS.** The replay token and the payment header travel in
   request headers. Anyone who can read them in transit can use them.
 - **`staleMs` exceeds your slowest handler plus the facilitator timeout.** A
   worker that outlives it loses its claim; it then fails closed and charges
   nothing, but its work is wasted.
-- **Stored responses and request data are at rest in your database.** Latch
+- **Stored responses and request data are at rest in your database.** Detent
   does not encrypt or purge them.
 - **Receipts are HMAC-signed.** They prove the seller issued them to anyone
   holding the secret, and nothing to anyone who does not.

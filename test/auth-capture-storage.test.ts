@@ -64,7 +64,7 @@ async function stores(): Promise<{ name: string; store: AuthorizedPaymentStorage
   await migrateAuthCapture(sql); // idempotent
   return [
     { name: "sdk in-memory", store: new InMemoryAuthorizedPaymentStorage(), close: async () => {} },
-    { name: "latch postgres", store: postgresAuthorizedPaymentStorage<AuthorizedPayment>(sql), close: () => db.close() },
+    { name: "detent postgres", store: postgresAuthorizedPaymentStorage<AuthorizedPayment>(sql), close: () => db.close() },
   ];
 }
 

@@ -23,23 +23,23 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { memoryJournal } from "../src/adapters/memory-journal.ts";
 import { migrate, postgresJournal, type SqlClient, type SqlExecutor } from "../src/adapters/postgres-journal.ts";
 import { ledgerFacilitator } from "../src/adapters/ledger-facilitator.ts";
-import { Latch } from "../src/gate.ts";
+import { Detent } from "../src/gate.ts";
 import { auditChain, hmacSigner } from "../src/receipt.ts";
 import type { Journal } from "../src/ports.ts";
 import type { State } from "../src/states.ts";
-import { eip3009Oracle, latchX402, type SettlementOracle, type SettlementProbe, type X402Alarm } from "../src/x402/index.ts";
+import { eip3009Oracle, detentX402, type SettlementOracle, type SettlementProbe, type X402Alarm } from "../src/x402/index.ts";
 
 /**
  * The bridge, driven by the official x402 SDK on both sides: `@x402/fetch`
  * signs real EIP-3009 payments, `@x402/hono` serves them, and the only fake is
- * the chain. Nothing here calls a Latch hook directly — every assertion is
+ * the chain. Nothing here calls a Detent hook directly — every assertion is
  * about what the SDK does once the hooks are installed, because that is the
  * only behaviour a seller ever gets.
  */
 
 // Several tests break things on purpose, and the SDK and Hono log what broke.
-// Those lines are expected; they are hidden unless LATCH_TEST_VERBOSE is set.
-if (!process.env.LATCH_TEST_VERBOSE) {
+// Those lines are expected; they are hidden unless DETENT_TEST_VERBOSE is set.
+if (!process.env.DETENT_TEST_VERBOSE) {
   const { warn, error } = console;
   const expected = (args: unknown[]) =>
     (typeof args[0] === "string" && args[0].startsWith("[x402]")) ||
@@ -132,7 +132,7 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
   const oracle: SettlementOracle = async (probe) => (chain.has(probe.payer, probe.nonce) ? "settled" : "unsettled");
   if (opts.findTx === "throws") oracle.findTransaction = async () => Promise.reject(new Error("rpc down"));
   else if (opts.findTx !== false) oracle.findTransaction = async (probe) => (probes.push(probe), chain.txOf(probe.payer, probe.nonce));
-  const latch = latchX402(server, {
+  const detent = detentX402(server, {
     journal,
     clock,
     signer: hmacSigner(SECRET),
@@ -155,16 +155,16 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
       },
       description: "one answer",
       extensions: {
-        ...(opts.token === false ? {} : latch.declare()),
+        ...(opts.token === false ? {} : detent.declare()),
         ...(opts.pid ? { [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() } : {}),
       },
     },
   };
-  // `conform`: the server wrapped by latch.http(), which answers an in-flight
+  // `conform`: the server wrapped by detent.http(), which answers an in-flight
   // payment 409 as the x402 recovery spec requires. Otherwise the stock wiring.
   app.use(
     opts.conform
-      ? paymentMiddlewareFromHTTPServer(latch.http(new x402HTTPResourceServer(server, routes)))
+      ? paymentMiddlewareFromHTTPServer(detent.http(new x402HTTPResourceServer(server, routes)))
       : paymentMiddleware(routes, server),
   );
   app.post("/buy", async (c) => {
@@ -178,7 +178,7 @@ function instance(shared: { journal: Journal; chain: Chain; clock: TestClock }, 
     return c.json({ answer: `answer to ${body.q ?? "?"}`, run });
   });
 
-  return { app, latch, calls, control, alarms, probes };
+  return { app, detent, calls, control, alarms, probes };
 }
 type Instance = ReturnType<typeof instance>;
 
@@ -217,7 +217,7 @@ async function sign(w: Pick<World, "app" | "client">, body: unknown, pid?: strin
 const reasonOf = (res: Response): string | undefined =>
   decodePaymentRequiredHeader(res.headers.get("payment-required") ?? "").error;
 
-async function states(journal: Journal, w: { latch: Instance["latch"] }): Promise<State[]> {
+async function states(journal: Journal, w: { detent: Instance["detent"] }): Promise<State[]> {
   void w;
   const all = (journal as ReturnType<typeof memoryJournal>).snapshotAll();
   return all.map((s) => s.state);
@@ -227,7 +227,7 @@ const tick = () => new Promise<void>((r) => setImmediate(r));
 
 // ── the done-test ─────────────────────────────────────────────────────────
 
-test("x402: the official client pays an official server through Latch — 402, pay, 200", async () => {
+test("x402: the official client pays an official server through Detent — 402, pay, 200", async () => {
   const w = world();
   const pay = wrapFetchWithPayment((input, init) => Promise.resolve(w.app.request(new Request(input as string, init))), w.client);
 
@@ -243,7 +243,7 @@ test("x402: the official client pays an official server through Latch — 402, p
   assert.deepEqual(w.calls, { verify: 1, settle: 1 });
   assert.equal(w.chain.size, 1);
 
-  const chain = await w.latch.chain();
+  const chain = await w.detent.chain();
   assert.equal(chain.length, 1);
   assert.equal(chain[0]?.receipt.outcome, "delivered");
   assert.equal(chain[0]?.receipt.chargedMicros, 10_000);
@@ -328,8 +328,8 @@ test("x402: a settled payment rebuilt from public chain data cannot collect the 
   const rebuilt = decodePaymentSignatureHeader(header);
   const forgeries = [
     { ...rebuilt, extensions: {} },
-    { ...rebuilt, extensions: { latch: { info: { version: 1, token: "0".repeat(32) } } } },
-    { ...rebuilt, extensions: { latch: { info: { version: 1 } } } },
+    { ...rebuilt, extensions: { detent: { info: { version: 1, token: "0".repeat(32) } } } },
+    { ...rebuilt, extensions: { detent: { info: { version: 1 } } } },
   ];
   for (const forged of forgeries) {
     const res = await post(w.app, { q: "secret" }, encodePaymentSignatureHeader(forged));
@@ -343,7 +343,7 @@ test("x402: a settled payment rebuilt from public chain data cannot collect the 
   assert.equal((await post(w.app, { q: "secret" }, header)).status, 200);
 });
 
-test("x402: on a route that does not declare the latch extension, a settled payment is simply spent", async () => {
+test("x402: on a route that does not declare the detent extension, a settled payment is simply spent", async () => {
   const w = world({ token: false });
   const header = await sign(w, { q: "a" });
   assert.equal((await post(w.app, { q: "a" }, header)).status, 200);
@@ -418,7 +418,7 @@ test("x402: a settle that moved money but reported failure still delivers", asyn
     assert.equal(res.status, 200, `${fault}: a charged caller must get the good`);
     assert.deepEqual(await res.json(), { answer: "answer to a", run: 1 });
     assert.deepEqual(await states(w.journal, w), ["delivered"]);
-    assert.equal((await w.latch.chain()).length, 1);
+    assert.equal((await w.detent.chain()).length, 1);
   }
 });
 
@@ -435,10 +435,10 @@ test("x402: a settle that failed with the payment still live waits, then voids o
   assert.equal(w.alarms.at(-1)?.kind, "settlement_unresolved");
 
   w.clock.advance(STALE + 1);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["settling"], "still live, so still waiting");
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["settling"], "still live, so still waiting");
 
   w.clock.advance(400_000);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["void"]);
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["void"]);
   assert.equal(w.chain.size, 0);
 });
 
@@ -471,7 +471,7 @@ test("x402: with no oracle, an unresolved settle that expires is stuck and alarm
   assert.deepEqual(await states(w.journal, w), ["settling"]);
 
   w.clock.advance(500_000);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["stuck"]);
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["stuck"]);
   assert.equal(w.alarms.at(-1)?.kind, "stuck");
   // The purchase stays blocked: a retry is told the outcome is unknown, not that it is closed.
   assert.equal(reasonOf(await post(w.app, { q: "a" }, header)), "payment_unresolved");
@@ -508,13 +508,13 @@ test("x402: a crash after the money moved is recovered by the sweep with no retr
   for (let i = 0; i < 20; i++) await tick();
 
   const b = w.boot();
-  assert.deepEqual(await b.latch.sweep(), [], "a fresh claim is left alone");
+  assert.deepEqual(await b.detent.sweep(), [], "a fresh claim is left alone");
   w.clock.advance(STALE + 1);
-  assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["delivered"]);
-  assert.equal((await b.latch.chain()).length, 1, "and it is receipted");
+  assert.deepEqual((await b.detent.sweep()).map((r) => r.state), ["delivered"]);
+  assert.equal((await b.detent.chain()).length, 1, "and it is receipted");
 
   // The facilitator's reply died with the process; the oracle found the transaction.
-  assert.equal((await b.latch.chain())[0]?.receipt.settlementRef, "0xtx1");
+  assert.equal((await b.detent.chain())[0]?.receipt.settlementRef, "0xtx1");
   const delivered = (w.journal as ReturnType<typeof memoryJournal>).snapshotAll()[0]?.entries.find((e) => e.state === "delivered");
   assert.equal(delivered?.evidence.reference, "0xtx1", "the report can link it");
   assert.equal(delivered?.evidence.recovered, true);
@@ -535,8 +535,8 @@ test("x402: a recovered payment whose transaction cannot be found is still deliv
 
     const b = w.boot();
     w.clock.advance(STALE + 1);
-    assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["delivered"], `${find}: the outcome never depends on the lookup`);
-    assert.equal((await b.latch.chain())[0]?.receipt.settlementRef, null);
+    assert.deepEqual((await b.detent.sweep()).map((r) => r.state), ["delivered"], `${find}: the outcome never depends on the lookup`);
+    assert.equal((await b.detent.chain())[0]?.receipt.settlementRef, null);
     assert.equal(w.chain.size, 1);
   }
 });
@@ -551,7 +551,7 @@ test("x402: a crash mid-handler charges nothing and the sweep closes the claim",
 
   const b = w.boot();
   w.clock.advance(STALE + 1);
-  assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["void"]);
+  assert.deepEqual((await b.detent.sweep()).map((r) => r.state), ["void"]);
   assert.equal(w.chain.size, 0);
   assert.equal(reasonOf(await post(b.app, { q: "a" }, header)), "payment_closed");
 });
@@ -565,7 +565,7 @@ test("x402: a worker the sweep gave up on fails closed when it finally tries to 
   for (let i = 0; i < 20; i++) await tick();
 
   w.clock.advance(STALE + 1);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["void"]);
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["void"]);
 
   release();
   const res = await slow;
@@ -644,7 +644,7 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
         const seenGood: boolean[] = [first?.status === 200];
         for (const wait of [STALE + 1, 400_000]) {
           clock.advance(wait);
-          await b.latch.sweep();
+          await b.detent.sweep();
           const retry = await post(b.app, body, header);
           if (retry.status === 200) assert.deepEqual(await retry.json(), { answer: "answer to a", run: 1 }, label);
           seenGood.push(retry.status === 200);
@@ -660,7 +660,7 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
           assert.ok(["delivered", "void"].includes(state), `${label}: left in ${state}`);
         }
         if (charged) {
-          const receipts = await b.latch.chain();
+          const receipts = await b.detent.chain();
           assert.equal(receipts.length, 1, `${label}: a charged payment must end with exactly one receipt`);
           assert.equal(auditChain(receipts, hmacSigner(SECRET)), -1, label);
         }
@@ -673,7 +673,7 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
   assert.equal(cases, faults.length * (WRITES + 1) * 2);
   // Both sides of the "if and only if" must actually have been exercised.
   assert.ok(outcomes.charged >= 10 && outcomes.uncharged >= 10, JSON.stringify(outcomes));
-  if (process.env.LATCH_TEST_VERBOSE) {
+  if (process.env.DETENT_TEST_VERBOSE) {
     console.log("crash matrix outcomes", outcomes);
     for (const r of rows) console.log("CRASHROW " + JSON.stringify(r));
   }
@@ -704,7 +704,7 @@ test("x402: a journal that is down before the claim refuses the sale; nothing ru
   down = true;
   const res = await post(w.app, { q: "a" }, header);
   assert.equal(res.status, 402);
-  assert.equal(reasonOf(res), "latch_unavailable");
+  assert.equal(reasonOf(res), "detent_unavailable");
   assert.equal(w.control.handlerRuns, 0);
   assert.equal(w.chain.size, 0);
   assert.equal(w.alarms.at(-1)?.kind, "journal_error");
@@ -747,7 +747,7 @@ test("x402: a journal that goes down after the settle still delivers, and the sw
 
   down = false;
   w.clock.advance(STALE + 1);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["delivered"]);
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["delivered"]);
 });
 
 // ── payment-identifier: the retry that signs again ────────────────────────
@@ -843,9 +843,9 @@ test("x402: a scheme the bridge is not configured for passes through untouched",
   const w = world({ schemes: ["auth-capture"] });
   const header = await sign(w, { q: "a" });
   const res = await post(w.app, { q: "a" }, header);
-  assert.equal(res.status, 200, "the SDK serves it exactly as it would without Latch");
+  assert.equal(res.status, 200, "the SDK serves it exactly as it would without Detent");
   assert.equal(w.chain.size, 1);
-  assert.deepEqual(await states(w.journal, w), [], "and Latch records nothing about it");
+  assert.deepEqual(await states(w.journal, w), [], "and Detent records nothing about it");
 });
 
 test("x402: the strict gate's sweep leaves x402 payments to the bridge", async () => {
@@ -854,7 +854,7 @@ test("x402: the strict gate's sweep leaves x402 payments to the bridge", async (
   void post(w.app, { q: "a" }, await sign(w, { q: "a" }));
   for (let i = 0; i < 20; i++) await tick();
 
-  const gate = new Latch(
+  const gate = new Detent(
     { payTo: SELLER },
     { journal: w.journal, facilitator: ledgerFacilitator(), producer: { produce: async () => "x" }, signer: hmacSigner(SECRET), clock: w.clock },
   );
@@ -1055,11 +1055,11 @@ test("x402: the oracle is told when the payment arrived, not when it expires", a
 
   const b = w.boot();
   w.clock.advance(STALE + 1);
-  assert.deepEqual((await b.latch.sweep()).map((r) => r.state), ["delivered"]);
+  assert.deepEqual((await b.detent.sweep()).map((r) => r.state), ["delivered"]);
   const probe = b.probes.at(-1);
   assert.ok(probe?.openedAt !== undefined && probe.openedAt <= arrived + 1, `openedAt ${probe?.openedAt} should be the arrival ${arrived}`);
   assert.ok(probe!.openedAt! < probe!.expiresAt);
-  assert.equal((await b.latch.chain())[0]?.receipt.settlementRef, "0xtx1");
+  assert.equal((await b.detent.chain())[0]?.receipt.settlementRef, "0xtx1");
 });
 
 test("oracle: findTransaction returns null rather than guess, and ignores an event for another nonce", async () => {
@@ -1117,7 +1117,7 @@ test("x402: limit — without a payment identifier, a re-signed payment is a new
   const auth = decodePaymentSignatureHeader(first).payload.authorization as { from: string; nonce: string };
   w.chain.use(auth.from, auth.nonce);
   w.clock.advance(STALE + 1);
-  await w.latch.sweep();
+  await w.detent.sweep();
 
   assert.equal(w.chain.size, 2, "two charges for one purchase: what payment-identifier exists to prevent");
   // Each charge is still matched by a good the caller can collect; nothing is charged for nothing.
@@ -1196,13 +1196,13 @@ test("journalReport: a read-only page of where every payment ended, safe to open
   assert.doesNotMatch(html, /\b(src|href)="https?:/, "no external resources");
 
   // The data the page draws from is the same data, carried as inert JSON.
-  const embedded = html.match(/<script id="latch-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1] ?? "";
+  const embedded = html.match(/<script id="detent-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1] ?? "";
   assert.equal(JSON.parse(embedded).title, hostile);
   assert.equal(JSON.parse(embedded).payments.length, 2);
   await db.close();
 });
 
-// ── latch.http(): the 409 the x402 recovery spec requires ─────────────────
+// ── detent.http(): the 409 the x402 recovery spec requires ─────────────────
 //
 // x402-foundation/x402#3848 §5.1(6)-(7) and control 9: a copy that loses the
 // claim, or a retry while a settle is unresolved, MUST NOT get a payment
@@ -1302,7 +1302,7 @@ test("x402 http(): a stuck payment stays blocked with 503 payment_unresolved", a
   const header = await sign(w, { q: "a" });
   await conflictOf(await post(w.app, { q: "a" }, header));
   w.clock.advance(500_000);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["stuck"]);
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["stuck"]);
 
   // Spec 0.9 control 11: 503, the reason named, no Retry-After.
   const retry = await post(w.app, { q: "a" }, header);
@@ -1340,16 +1340,16 @@ test("x402 http(): every other answer is untouched", async () => {
   const expiring = await sign(w, { q: "c" });
   await conflictOf(await post(w.app, { q: "c" }, expiring));
   w.clock.advance(400_000);
-  assert.deepEqual((await w.latch.sweep()).map((r) => r.state), ["void"]);
+  assert.deepEqual((await w.detent.sweep()).map((r) => r.state), ["void"]);
   assert.equal(w.chain.size, 1);
 });
 
 test("x402 http(): wrapping is idempotent and returns the same server", () => {
   const server = new x402ResourceServer({} as FacilitatorClient);
-  const latch = latchX402(server, { journal: memoryJournal() });
+  const detent = detentX402(server, { journal: memoryJournal() });
   const http = new x402HTTPResourceServer(server, {});
-  const wrapped = latch.http(http);
+  const wrapped = detent.http(http);
   assert.equal(wrapped, http);
   const once = http.processHTTPRequest;
-  assert.equal(latch.http(http).processHTTPRequest, once, "a second call does not wrap again");
+  assert.equal(detent.http(http).processHTTPRequest, once, "a second call does not wrap again");
 });

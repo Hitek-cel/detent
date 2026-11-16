@@ -1,10 +1,10 @@
 /**
- * See Latch work on a real x402 server, in about a minute.
+ * See Detent work on a real x402 server, in about a minute.
  *
  *     npm run example            offline: a simulated chain, no network at all
  *     npm run example:testnet    live: Base Sepolia, the public x402 facilitator
  *
- * Both start a real HTTP server on 127.0.0.1, protect it with Latch over an
+ * Both start a real HTTP server on 127.0.0.1, protect it with Detent over an
  * in-process PostgreSQL, and pay it with the official x402 client. Then they
  * break things on purpose: a lost reply, three copies of one payment, a settle
  * that fails while the payment could still land (and a buyer who signs again
@@ -12,11 +12,11 @@
  *
  * Testnet mode moves free test USDC only. It refuses any network but Base
  * Sepolia, contacts only the facilitator and the Base Sepolia RPC (every
- * request is printed), and keeps its throwaway wallet in `.latch-demo/`,
+ * request is printed), and keeps its throwaway wallet in `.detent-demo/`,
  * which git ignores. It never prints a private key.
  */
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { Hono } from "hono";
 import { PGlite } from "@electric-sql/pglite";
 import { paymentMiddlewareFromHTTPServer, x402HTTPResourceServer, x402ResourceServer } from "@x402/hono";
@@ -39,7 +39,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { migrate, postgresJournal, type SqlClient, type SqlExecutor } from "../src/adapters/postgres-journal.ts";
 import { hmacSigner } from "../src/receipt.ts";
 import type { Journal } from "../src/ports.ts";
-import { eip3009Oracle, latchX402, purchasePaymentId, type SettlementOracle } from "../src/x402/index.ts";
+import { eip3009Oracle, detentX402, purchasePaymentId, type SettlementOracle } from "../src/x402/index.ts";
 
 const LIVE = process.argv.includes("--testnet");
 
@@ -58,7 +58,9 @@ if (!FACILITATOR) throw new Error(`unknown facilitator; choose one of: ${Object.
 const RPC = "https://sepolia.base.org";
 const PRICE = "$0.01";
 const PRICE_UNITS = 10_000n; // 0.01 USDC, 6 decimals
-const WALLET_DIR = ".latch-demo";
+const WALLET_DIR = ".detent-demo";
+// Detent was called Latch: carry an older demo folder (its test wallet and journal) across.
+if (!existsSync(WALLET_DIR) && existsSync(".latch-demo")) renameSync(".latch-demo", WALLET_DIR);
 const WALLET_FILE = `${WALLET_DIR}/wallet.json`;
 const STALE_MS = LIVE ? 20_000 : 1_500;
 const DB_OFFLINE = `${WALLET_DIR}/db-offline`;
@@ -176,20 +178,20 @@ async function startServer(journal: Journal, facilitator: FacilitatorClient, ora
   const server = new x402ResourceServer(facilitator).register(NETWORK, new ExactEvmScheme());
   // Receipts are signed with a fixed demo secret: fine for a demo, never for production.
   const signer = hmacSigner("latch-demo-receipts-not-a-production-secret");
-  const latch = latchX402(server, { journal, oracle, signer, staleMs: STALE_MS });
+  const detent = detentX402(server, { journal, oracle, signer, staleMs: STALE_MS });
   const runs = { count: 0 };
 
   const app = new Hono();
-  // latch.http() answers a payment that is still being processed with
+  // detent.http() answers a payment that is still being processed with
   // 409 operation_in_flight ("retry this same payment") instead of a 402.
   const httpServer = new x402HTTPResourceServer(server, {
     "POST /answer": {
       accepts: { scheme: "exact", price: PRICE, network: NETWORK, payTo },
-      description: "Latch demo: one paid answer",
-      extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
+      description: "Detent demo: one paid answer",
+      extensions: { ...detent.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
     },
   });
-  app.use(paymentMiddlewareFromHTTPServer(latch.http(httpServer)));
+  app.use(paymentMiddlewareFromHTTPServer(detent.http(httpServer)));
   app.post("/answer", async (c) => {
     runs.count++;
     const { question } = (await c.req.json().catch(() => ({}))) as { question?: string };
@@ -218,7 +220,7 @@ async function startServer(journal: Journal, facilitator: FacilitatorClient, ora
     http.closeAllConnections();
     http.close();
   };
-  return { url: `http://127.0.0.1:${port}/answer`, latch, runs, stop };
+  return { url: `http://127.0.0.1:${port}/answer`, detent, runs, stop };
 }
 
 // ── the buyer: the official x402 client ────────────────────────────────────
@@ -287,7 +289,7 @@ function loadOrCreateWallet(): { wallet: Wallet; created: boolean } {
 
 // ── run ────────────────────────────────────────────────────────────────────
 async function main() {
-  say(LIVE ? "Latch live demo — Base Sepolia testnet (free test USDC only)" : "Latch demo — offline, simulated chain (no network)");
+  say(LIVE ? "Detent live demo — Base Sepolia testnet (free test USDC only)" : "Detent demo — offline, simulated chain (no network)");
 
   let facilitatorBase: FacilitatorClient;
   let oracle: SettlementOracle;
@@ -370,7 +372,7 @@ async function main() {
   const body2 = await r2.json();
   check(r2.status === 200 && JSON.stringify(body2) === JSON.stringify(body1), "the stored answer came back, identical", `expected the stored answer, got ${r2.status}`);
   check(srv.runs.count === 1, "the paid work did not run again", `the paid work ran ${srv.runs.count} times`);
-  note("Without Latch the SDK answers 402: the payment is spent and the answer is gone.");
+  note("Without Detent the SDK answers 402: the payment is spent and the answer is gone.");
 
   // 3 — three copies of one payment at once
   step(3, "Three copies of one new payment arrive at the same moment");
@@ -385,7 +387,7 @@ async function main() {
     `one caller served; the others told: ${told3.join(", ")} (retry the same payment)`,
     `statuses ${statuses.join(", ")}`,
   );
-  note("Without Latch the SDK runs the paid work three times for one payment.");
+  note("Without Detent the SDK runs the paid work three times for one payment.");
 
   // 4 — told "failed", the buyer signs again for the same order
   step(4, "The settle fails while the payment could still land, and the buyer signs again anyway");
@@ -397,12 +399,12 @@ async function main() {
   const h4a = await b.sign(srv.url, { question: "order" }, orderId);
   const r4a = await b.post(srv.url, { question: "order" }, h4a);
   check(r4a.status === 409, `the buyer was told ${await toldOf(r4a)}: retry this same payment, don't sign a new one`, `expected 409, got ${r4a.status}`);
-  note("Without latch.http() the SDK answers 402 here, which invites a second signature.");
+  note("Without detent.http() the SDK answers 402 here, which invites a second signature.");
   const h4b = await b.sign(srv.url, { question: "order" }, orderId);
   const r4b = await b.post(srv.url, { question: "order" }, h4b);
   check(r4b.status === 409, "a buyer who signs again anyway is refused, so the second signature can never be charged", `expected a refusal, got ${r4b.status} ${(await toldOf(r4b)) ?? ""}`);
   note("Both payments carry an identifier derived from the order id (purchasePaymentId).");
-  note("Without Latch, or with a fresh random identifier per attempt, the second signature is a second charge.");
+  note("Without Detent, or with a fresh random identifier per attempt, the second signature is a second charge.");
   note(`Waiting ${STALE_MS / 1000}s, then the buyer retries the original payment…`);
   await sleep(STALE_MS + 500);
   const r4c = await b.post(srv.url, { question: "order" }, h4a);
@@ -426,7 +428,7 @@ async function main() {
   await sleep(STALE_MS + 500);
   let recovered = "";
   for (let i = 0; i < 6 && recovered !== "delivered"; i++) {
-    const swept = await srv.latch.sweep();
+    const swept = await srv.detent.sweep();
     recovered = swept[0]?.state ?? recovered;
     if (recovered !== "delivered") await sleep(2_000); // the RPC can trail the chain by a block or two
   }
@@ -445,8 +447,8 @@ async function main() {
 
   say(failures === 0 ? "\nEverything held." : `\n${failures} check(s) failed.`);
   if (LIVE) {
-    say("\nThe test wallets stay in .latch-demo/ (ignored by git) for the next run.");
-    say("To forget them:  Remove-Item -Recurse .latch-demo   (PowerShell)   or   rm -rf .latch-demo");
+    say("\nThe test wallets stay in .detent-demo/ (ignored by git) for the next run.");
+    say("To forget them:  Remove-Item -Recurse .detent-demo   (PowerShell)   or   rm -rf .detent-demo");
     say("To see every live payment so far as a page:  npm run report:testnet");
   } else {
     say("\nTo see every payment so far as a page:  npm run report");

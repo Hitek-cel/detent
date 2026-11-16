@@ -1,4 +1,4 @@
-import { JournalConflictError, LatchError } from "./errors.ts";
+import { JournalConflictError, DetentError } from "./errors.ts";
 import { deriveIdempotencyKey, hashRequest, newInvoiceId, newNonce } from "./ids.ts";
 import { assertMicros } from "./money.ts";
 import { assertTransition, isTerminal, type State } from "./states.ts";
@@ -118,7 +118,7 @@ export type RedeemResult<TRes> = {
  * seller's own safety — never the caller's — for latency, within a limit the
  * seller chose. See CREDIT in states.ts.
  */
-export class Latch<TReq, TRes> {
+export class Detent<TReq, TRes> {
   private readonly cfg: Required<Omit<GateConfig, "credit">>;
   private readonly credit: CreditPolicy | undefined;
   private readonly d: GateDeps<TReq, TRes>;
@@ -154,7 +154,7 @@ export class Latch<TReq, TRes> {
     request: TReq;
     resource?: string;
   }): Promise<{ quote: Quote; payment: PaymentRequired }> {
-    if (!input.payer) throw new LatchError("bad_request", "Missing payer id");
+    if (!input.payer) throw new DetentError("bad_request", "Missing payer id");
     assertMicros(input.amountMicros);
 
     const quote: Quote = {
@@ -209,14 +209,14 @@ export class Latch<TReq, TRes> {
     request: TReq;
   }): Promise<RedeemResult<TRes>> {
     const snap = await this.d.journal.get(input.invoiceId);
-    if (!snap) throw new LatchError("unknown_invoice", "Unknown invoice");
+    if (!snap) throw new DetentError("unknown_invoice", "Unknown invoice");
     const { quote } = snap;
 
     if (quote.payer !== input.payer) {
-      throw new LatchError("payer_mismatch", "Invoice belongs to a different payer");
+      throw new DetentError("payer_mismatch", "Invoice belongs to a different payer");
     }
     if (hashRequest(input.request) !== quote.requestHash) {
-      throw new LatchError("bad_request", "Request does not match the quoted request", {
+      throw new DetentError("bad_request", "Request does not match the quoted request", {
         detail: { expected: quote.requestHash },
       });
     }
@@ -236,7 +236,7 @@ export class Latch<TReq, TRes> {
       if (after && (isTerminal(after.state) || after.state === "fronted")) {
         return this.outcomeFor(after.state, quote, idempotencyKey, true);
       }
-      throw new LatchError("concurrent_attempt", "Invoice is already being processed", {
+      throw new DetentError("concurrent_attempt", "Invoice is already being processed", {
         retryable: true,
       });
     }
@@ -244,7 +244,7 @@ export class Latch<TReq, TRes> {
     if (this.clock.now() > quote.expiresAt) {
       await this.advance(snap.seq, quote, "void", { reason: "quote_expired" });
       await this.writeReceipt(quote, "void", { chargedMicros: 0 });
-      throw new LatchError("invoice_expired", "Quote expired; request a new one");
+      throw new DetentError("invoice_expired", "Quote expired; request a new one");
     }
 
     // Persist the request before anything can charge for it. Recovery runs long
@@ -264,7 +264,7 @@ export class Latch<TReq, TRes> {
     if (!verdict.ok) {
       await this.advance(seq, quote, "void", { reason: verdict.reason });
       await this.writeReceipt(quote, "void", { chargedMicros: 0 });
-      throw new LatchError("proof_invalid", `Payment proof rejected: ${verdict.reason}`);
+      throw new DetentError("proof_invalid", `Payment proof rejected: ${verdict.reason}`);
     }
     if (verdict.amountMicros !== quote.amountMicros) {
       await this.advance(seq, quote, "void", {
@@ -273,7 +273,7 @@ export class Latch<TReq, TRes> {
         required: quote.amountMicros,
       });
       await this.writeReceipt(quote, "void", { chargedMicros: 0 });
-      throw new LatchError("amount_mismatch", "Payment does not cover the quoted amount", {
+      throw new DetentError("amount_mismatch", "Payment does not cover the quoted amount", {
         detail: { offered: verdict.amountMicros, required: quote.amountMicros },
       });
     }
@@ -283,7 +283,7 @@ export class Latch<TReq, TRes> {
     if (!fresh) {
       await this.advance(seq, quote, "void", { reason: "nonce_replayed", nonce: verdict.nonce });
       await this.writeReceipt(quote, "void", { chargedMicros: 0 });
-      throw new LatchError("proof_replayed", "This payment proof has already been used");
+      throw new DetentError("proof_replayed", "This payment proof has already been used");
     }
 
     // Record the idempotency key BEFORE settling. If the process dies during
@@ -319,7 +319,7 @@ export class Latch<TReq, TRes> {
         return this.onPending(seq, quote, input.request, idempotencyKey);
       }
       if (status.kind === "void") {
-        throw new LatchError("settlement_failed", `Settlement failed: ${failure}`);
+        throw new DetentError("settlement_failed", `Settlement failed: ${failure}`);
       }
       reference = status.reference;
     }
@@ -336,7 +336,7 @@ export class Latch<TReq, TRes> {
    */
   async recover(invoiceId: string): Promise<State> {
     const snap = await this.d.journal.get(invoiceId);
-    if (!snap) throw new LatchError("unknown_invoice", "Unknown invoice");
+    if (!snap) throw new DetentError("unknown_invoice", "Unknown invoice");
     const { quote, state } = snap;
     const idempotencyKey = this.keyFor(quote);
 
@@ -472,7 +472,7 @@ export class Latch<TReq, TRes> {
     evidence: Record<string, unknown>,
   ): Promise<number> {
     const snap = await this.d.journal.get(quote.invoiceId);
-    if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
+    if (!snap) throw new DetentError("unknown_invoice", "Invoice vanished mid-flight");
     assertTransition(snap.state, to);
     try {
       const entry = await this.d.journal.append(
@@ -482,7 +482,7 @@ export class Latch<TReq, TRes> {
       return entry.seq;
     } catch (err) {
       if (err instanceof JournalConflictError) {
-        throw new LatchError("concurrent_attempt", "Another worker is advancing this invoice", {
+        throw new DetentError("concurrent_attempt", "Another worker is advancing this invoice", {
           retryable: true,
         });
       }
@@ -510,7 +510,7 @@ export class Latch<TReq, TRes> {
     try {
       status = await this.d.facilitator.statusOf(idempotencyKey);
     } catch {
-      throw new LatchError("settlement_failed", "Settlement status unknown; will be resolved", {
+      throw new DetentError("settlement_failed", "Settlement status unknown; will be resolved", {
         retryable: true,
         detail: { invoiceId: quote.invoiceId },
       });
@@ -557,7 +557,7 @@ export class Latch<TReq, TRes> {
     request?: TReq,
   ): Promise<State> {
     const snap = await this.d.journal.get(quote.invoiceId);
-    if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
+    if (!snap) throw new DetentError("unknown_invoice", "Invoice vanished mid-flight");
 
     const credit = this.onCredit(snap.entries);
     const attempts = snap.entries.filter((e) => e.state === "producing").length;
@@ -753,7 +753,7 @@ export class Latch<TReq, TRes> {
       const link = chain[i];
       if (link && link.receipt.invoiceId === invoiceId) return link;
     }
-    throw new LatchError("needs_operator", "Receipt missing for a delivered invoice");
+    throw new DetentError("needs_operator", "Receipt missing for a delivered invoice");
   }
 
   /**
@@ -768,7 +768,7 @@ export class Latch<TReq, TRes> {
   ): Promise<RedeemResult<TRes>> {
     const good = async (): Promise<TRes> => {
       const cached = await this.d.journal.getResult(idempotencyKey);
-      if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
+      if (!cached) throw new DetentError("needs_operator", "Delivered invoice has no stored result");
       return cached.payload as TRes;
     };
     const detail = { detail: { invoiceId: quote.invoiceId } };
@@ -792,25 +792,25 @@ export class Latch<TReq, TRes> {
         };
       case "refunded":
         throw replayed
-          ? new LatchError("producer_failed", "This invoice was refunded; request a new quote")
-          : new LatchError("producer_failed", "Could not deliver; your payment was refunded", detail);
+          ? new DetentError("producer_failed", "This invoice was refunded; request a new quote")
+          : new DetentError("producer_failed", "Could not deliver; your payment was refunded", detail);
       case "abandoning":
-        throw new LatchError(
+        throw new DetentError(
           "producer_failed",
           "Could not deliver. Your payment is pending in a batch and will be returned if it lands",
           detail,
         );
       case "stuck":
         throw replayed
-          ? new LatchError("needs_operator", "This invoice needs operator review")
-          : new LatchError("needs_operator", "Delivery failed and the refund did not go through", detail);
+          ? new DetentError("needs_operator", "This invoice needs operator review")
+          : new DetentError("needs_operator", "Delivery failed and the refund did not go through", detail);
       case "void":
         if (!replayed) {
-          throw new LatchError("producer_failed", "Could not deliver; you were not charged", detail);
+          throw new DetentError("producer_failed", "Could not deliver; you were not charged", detail);
         }
-        throw new LatchError("invoice_not_payable", "This invoice is closed");
+        throw new DetentError("invoice_not_payable", "This invoice is closed");
       default:
-        throw new LatchError("invoice_not_payable", "This invoice is closed");
+        throw new DetentError("invoice_not_payable", "This invoice is closed");
     }
   }
 
@@ -829,7 +829,7 @@ export class Latch<TReq, TRes> {
     idempotencyKey: string,
   ): Promise<RedeemResult<TRes>> {
     const wait = (why: string) =>
-      new LatchError("settlement_failed", why, {
+      new DetentError("settlement_failed", why, {
         retryable: true,
         detail: { invoiceId: quote.invoiceId },
       });

@@ -22,7 +22,7 @@ import type {
 } from "./types.ts";
 
 /**
- * Latch for the official x402 SDK.
+ * Detent for the official x402 SDK.
  *
  * The SDK's resource server keeps a payment's state in process memory. That is
  * enough until something goes wrong between "the money moved" and "the caller
@@ -61,19 +61,19 @@ const PAYMENT_ID = /^[a-zA-Z0-9_-]{16,128}$/;
  * the settlement transaction's calldata, on a public chain. Anyone could
  * rebuild the header and ask for the response.
  *
- * So the 402 carries a fresh random token in a `latch` extension. The SDK's
+ * So the 402 carries a fresh random token in a `detent` extension. The SDK's
  * client echoes server extensions back with its payment, the token travels
  * only inside the TLS session, and it never reaches the chain. Only its hash
  * is journaled. A retry gets the stored response back only by presenting it.
  */
-const EXTENSION = "latch";
+const EXTENSION = "detent";
 const TOKEN = /^[0-9a-f]{32}$/;
 
 /**
  * Refusals whose honest HTTP answer is "retry this same payment", not a payment
  * challenge. A 402 invites the client to sign a second authorization for one
  * purchase: harmless while the first is still in flight, two charges once it
- * lands. `latch.http()` answers these as the x402 recovery spec requires
+ * lands. `detent.http()` answers these as the x402 recovery spec requires
  * (x402-foundation/x402#3848, 0.9, §5.1(6) and (7), controls 9 and 11):
  *
  *   payment_in_progress  409, Retry-After: another copy of this payment holds
@@ -133,7 +133,7 @@ export type X402Alarm = {
   error?: unknown;
 };
 
-export type X402LatchOptions = {
+export type X402DetentOptions = {
   journal: Journal;
   /**
    * Says whether a payment moved money, independent of the facilitator. Without
@@ -172,7 +172,7 @@ export type X402LatchOptions = {
   onAlarm?: (alarm: X402Alarm) => void;
 };
 
-export type X402Latch = {
+export type X402Detent = {
   /**
    * Spread into a route's `extensions` to let callers of that route collect a
    * paid response again after a lost reply or a crash. Without it everything
@@ -185,7 +185,7 @@ export type X402Latch = {
   recover(invoiceId: string): Promise<State>;
   chain(): Promise<SignedReceipt[]>;
   /**
-   * Wraps the SDK's `x402HTTPResourceServer` so a payment Latch is still
+   * Wraps the SDK's `x402HTTPResourceServer` so a payment Detent is still
    * processing is answered `409 operation_in_flight` (retry the same payment),
    * and one that is `stuck` `503 payment_unresolved`, instead of a `402`
    * payment challenge. Returns the same server; pass it to
@@ -336,7 +336,7 @@ function paymentIdOf(payload: X402Payload): string | undefined {
   return typeof id === "string" && PAYMENT_ID.test(id) ? id : undefined;
 }
 
-export function latchX402(server: X402HookRegistry, options: X402LatchOptions): X402Latch {
+export function detentX402(server: X402HookRegistry, options: X402DetentOptions): X402Detent {
   const journal = options.journal;
   const clock = options.clock ?? systemClock;
   const staleMs = options.staleMs ?? 120_000;
@@ -355,7 +355,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
   const seen = new WeakMap<object, Seen>();
   const claims = new WeakMap<object, Claim>();
 
-  // Requests Latch refused as still in flight, for `http()` to answer 409.
+  // Requests Detent refused as still in flight, for `http()` to answer 409.
   // Keyed by per-request objects the SDK already threads through: the framework
   // adapter at verify time, the payment payload at settle time.
   const inFlightRequests = new WeakMap<object, string>();
@@ -388,9 +388,9 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
     const raw = requirements.amount ?? requirements.maxAmountRequired ?? "";
     const amountMicros = /^\d{1,16}$/.test(raw) ? Number(raw) : Number.NaN;
     if (!isMicros(amountMicros)) {
-      // Integer-only money, as everywhere in Latch. An amount that does not fit
+      // Integer-only money, as everywhere in Detent. An amount that does not fit
       // is refused before verification rather than recorded wrongly.
-      throw new UnsupportedPayment(`Amount "${raw}" is outside the range Latch can account for`);
+      throw new UnsupportedPayment(`Amount "${raw}" is outside the range Detent can account for`);
     }
 
     const seconds = Number(id.expirySeconds);
@@ -796,9 +796,9 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       }
       return abort("payment_in_progress", "This payment is already being processed");
     } catch (error) {
-      if (error instanceof UnsupportedPayment) return abort("latch_unsupported_payment", error.message);
+      if (error instanceof UnsupportedPayment) return abort("detent_unsupported_payment", error.message);
       alarm({ kind: "journal_error", error });
-      return abort("latch_unavailable", "Payment journal unavailable; nothing was charged");
+      return abort("detent_unavailable", "Payment journal unavailable; nothing was charged");
     }
   }
 
@@ -843,7 +843,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       if (!ctx.result.isValid) return; // Never claimed, so nothing to undo.
 
       const mine = seen.get(payload);
-      if (!mine) return abort("latch_unavailable", "Payment was verified without being seen first");
+      if (!mine) return abort("detent_unavailable", "Payment was verified without being seen first");
       const { facts } = mine;
       const { requirements } = ctx;
       const quote: Quote = {
@@ -893,7 +893,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       return;
     } catch (error) {
       alarm({ kind: "journal_error", error });
-      return abort("latch_unavailable", "Payment journal unavailable; nothing was charged");
+      return abort("detent_unavailable", "Payment journal unavailable; nothing was charged");
     }
   }
 
@@ -936,15 +936,15 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
     if (!covers(ctx)) return;
     if (ctx.phase !== "after-handler") {
       throw new Error(
-        "latch402 supports the x402 `authorization` payment flow only; this route settles before its handler",
+        "detent supports the x402 `authorization` payment flow only; this route settles before its handler",
       );
     }
     const held = claims.get(ctx.paymentPayload);
-    if (!held) throw new Error("latch402: payment reached settlement without a journal claim");
+    if (!held) throw new Error("detent: payment reached settlement without a journal claim");
 
     if (held.mode === "replay" || held.mode === "replay_pid") {
       const settled = await journal.getResult(setKey(held.invoiceId));
-      if (!settled) throw new Error("latch402: delivered payment has no stored settlement");
+      if (!settled) throw new Error("detent: delivered payment has no stored settlement");
       // Already settled once. Hand back that settlement; the facilitator is not called.
       return { skip: true, result: clone(settled.payload as X402SettleResponse) };
     }
@@ -968,7 +968,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
     if (attempts >= maxSettleAttempts) {
       // An earlier attempt may still land; the sweep finds out. Not a 402.
       inFlightSettles.set(ctx.paymentPayload, "payment_in_progress");
-      throw new Error("latch402: settle attempts exhausted for this payment");
+      throw new Error("detent: settle attempts exhausted for this payment");
     }
     held.seq = await advance(held.invoiceId, "settling", held.seq, "settling", {
       attempt: attempts + 1,
@@ -1129,7 +1129,7 @@ export function latchX402(server: X402HookRegistry, options: X402LatchOptions): 
       const processRequest = httpServer.processHTTPRequest;
       const processSettlement = httpServer.processSettlement;
 
-      // Only a 402 Latch itself chose to refuse as in flight is rewritten.
+      // Only a 402 Detent itself chose to refuse as in flight is rewritten.
       // Every other answer, including the SDK's own 402s, passes untouched.
       httpServer.processHTTPRequest = async function (this: unknown, context: unknown, ...rest: unknown[]) {
         const result = await processRequest.call(this, context, ...rest);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Latch, type CreditPolicy } from "../src/gate.ts";
+import { Detent, type CreditPolicy } from "../src/gate.ts";
 import { memoryJournal } from "../src/adapters/memory-journal.ts";
 import { ledgerFacilitator, makeProof, type LedgerFacilitator } from "../src/adapters/ledger-facilitator.ts";
 import { hmacSigner } from "../src/receipt.ts";
@@ -97,9 +97,9 @@ export type World = {
   facilitator: LedgerFacilitator;
   producer: ProducerControl;
   clock: ReturnType<typeof fakeClock>;
-  gate: Latch<Req, Res>;
+  gate: Detent<Req, Res>;
   /** Build a second gate over the same durable state — i.e. a process restart. */
-  restart(journal?: Journal): Latch<Req, Res>;
+  restart(journal?: Journal): Detent<Req, Res>;
   buy(prompt?: string): Promise<{ quote: Quote; proof: string }>;
 };
 
@@ -119,7 +119,7 @@ export function makeWorld(
   const signer = hmacSigner(SECRET);
 
   const build = (j: Journal) =>
-    new Latch<Req, Res>(
+    new Detent<Req, Res>(
       {
         payTo: PAY_TO,
         quoteTtlMs: config.quoteTtlMs ?? 120_000,

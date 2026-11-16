@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LatchError } from "../src/errors.ts";
+import { DetentError } from "../src/errors.ts";
 import { auditChain, hmacSigner, verifyReceipt } from "../src/receipt.ts";
 import { makeProof } from "../src/adapters/ledger-facilitator.ts";
 import { assertMoneyIsSound, makeWorld, PAYER, PRICE, SECRET, stateOf, START_BALANCE } from "./harness.ts";
@@ -65,7 +65,7 @@ test("a quote buys exactly one request, not any request", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: "expensive question" } }),
-    (err: LatchError) => err.code === "bad_request",
+    (err: DetentError) => err.code === "bad_request",
   );
   assert.equal(w.producer.calls, 0);
   assertMoneyIsSound(w, { state: "void", delivered: false });
@@ -77,7 +77,7 @@ test("another agent cannot spend someone else's invoice", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: "agt_thief", proof, request: { prompt: "what is the risk" } }),
-    (err: LatchError) => err.code === "payer_mismatch",
+    (err: DetentError) => err.code === "payer_mismatch",
   );
   assert.equal(w.facilitator.balanceOf(PAYER), START_BALANCE);
 });
@@ -89,7 +89,7 @@ test("an expired quote is closed, not honoured", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: "what is the risk" } }),
-    (err: LatchError) => err.code === "invoice_expired",
+    (err: DetentError) => err.code === "invoice_expired",
   );
   assert.equal(await stateOf(w, quote.invoiceId), "void");
   assertMoneyIsSound(w, { state: "void", delivered: false });
@@ -102,7 +102,7 @@ test("underpaying is refused and moves nothing", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof: short, request: { prompt: "what is the risk" } }),
-    (err: LatchError) => err.code === "amount_mismatch",
+    (err: DetentError) => err.code === "amount_mismatch",
   );
   assert.equal(w.producer.calls, 0);
   assertMoneyIsSound(w, { state: "void", delivered: false });
@@ -115,7 +115,7 @@ test("when the producer fails, the payment comes back", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: "what is the risk" } }),
-    (err: LatchError) => err.code === "producer_failed",
+    (err: DetentError) => err.code === "producer_failed",
   );
 
   assert.equal(await stateOf(w, quote.invoiceId), "refunded");
@@ -129,7 +129,7 @@ test("a hanging producer is cut off at the deadline and refunded", async () => {
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: "what is the risk" } }),
-    (err: LatchError) => err.code === "producer_failed",
+    (err: DetentError) => err.code === "producer_failed",
   );
   assert.equal(await stateOf(w, quote.invoiceId), "refunded");
   assertMoneyIsSound(w, { state: "refunded", delivered: false });
@@ -143,7 +143,7 @@ test("if delivery fails AND the refund fails, the invoice is flagged, never sile
 
   await assert.rejects(
     w.gate.redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: "what is the risk" } }),
-    (err: LatchError) => err.code === "needs_operator",
+    (err: DetentError) => err.code === "needs_operator",
   );
 
   assert.equal(await stateOf(w, quote.invoiceId), "stuck");

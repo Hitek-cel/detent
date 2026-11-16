@@ -7,12 +7,12 @@
  * rule the test suite asserts. If the gate broke, this page would show it.
  */
 
-import { Latch } from "../src/gate.ts";
+import { Detent } from "../src/gate.ts";
 import { memoryJournal } from "../src/adapters/memory-journal.ts";
 import { ledgerFacilitator, makeProof } from "../src/adapters/ledger-facilitator.ts";
 import { auditChain, hmacSigner } from "../src/receipt.ts";
 import { formatUsd } from "../src/money.ts";
-import { isLatchError } from "../src/errors.ts";
+import { isDetentError } from "../src/errors.ts";
 import { STATES, isTerminal, type State } from "../src/states.ts";
 import type { Journal, SignedReceipt } from "../src/index.ts";
 
@@ -34,8 +34,8 @@ type Event =
   | { kind: "error"; code: string; message: string };
 
 type Env = {
-  gate: Latch<Req, Res>;
-  restart: (j?: Journal) => Latch<Req, Res>;
+  gate: Detent<Req, Res>;
+  restart: (j?: Journal) => Detent<Req, Res>;
   journal: ReturnType<typeof memoryJournal>;
   /** The journal the gate actually writes through, wrapped so the tape can watch it. */
   observed: Journal;
@@ -95,7 +95,7 @@ function makeEnv(opts: { failProducer?: boolean } = {}): Env {
   };
 
   const build = (j: Journal) =>
-    new Latch<Req, Res>(
+    new Detent<Req, Res>(
       { payTo: SELLER, produceTimeoutMs: 4_000, quoteTtlMs: 600_000 },
       {
         journal: j,
@@ -154,7 +154,7 @@ async function attempt(env: Env, fn: () => Promise<{ result: Res }>) {
     const out = await fn();
     env.events.push({ kind: "result", text: out.result.answer });
   } catch (err) {
-    if (isLatchError(err)) {
+    if (isDetentError(err)) {
       env.events.push({ kind: "error", code: err.code, message: err.message });
     } else {
       env.events.push({ kind: "error", code: "crash", message: String(err) });

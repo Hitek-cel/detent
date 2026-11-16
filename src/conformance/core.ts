@@ -131,7 +131,7 @@ export async function runChecks<S>(
 /** Human-readable report. Failures say what they would cost in production. */
 export function formatReport(report: ConformanceReport, heading: string): string {
   const label: Record<CheckStatus, string> = { pass: "PASS", fail: "FAIL", skip: "SKIP" };
-  const lines = [`Latch conformance — ${heading}`, ""];
+  const lines = [`Detent conformance — ${heading}`, ""];
 
   for (const r of report.results) {
     lines.push(`  ${label[r.status]}  ${r.id.padEnd(4)} ${r.title}`);

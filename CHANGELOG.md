@@ -5,14 +5,26 @@ this repository.
 
 ## Unreleased
 
+- **Renamed from Latch (`latch402`) to Detent (`detent`).** Another x402
+  project, the @latch402 readiness scanner for OKX.AI, used the name first.
+  Install `detent`; import from `"detent"`, `"detent/x402"` and
+  `"detent/conformance"`. Renamed exports: `latchX402` → `detentX402`,
+  `X402Latch` → `X402Detent`, `X402LatchOptions` → `X402DetentOptions`,
+  `LatchError` → `DetentError`, `isLatchError` → `isDetentError`. Error
+  codes `latch_unavailable` and `latch_unsupported_payment` are now
+  `detent_unavailable` and `detent_unsupported_payment`. Database tables keep
+  their `latch_` names, so existing journals and receipts work unchanged. The
+  demo folder is now `.detent-demo/`, and the demo moves an old
+  `.latch-demo/` across. The GitHub repository is now Hitek-cel/detent; old
+  links redirect. Earlier entries keep the old name.
 - **A `stuck` payment's retry is now answered `503 payment_unresolved`, not
-  409** (with `latch.http()`). Recovery spec 0.9 splits the two "don't pay
+  409** (with `detent.http()`). Recovery spec 0.9 splits the two "don't pay
   again yet" answers: `409 operation_in_flight` with `Retry-After` while the
   payment can still resolve, and `503` with no `Retry-After` once it is stuck
   (control 11). The body is unchanged and names the reason, so a client can
   tell it apart from a server-health 503. Payments still in flight keep 409.
 - **A payment recovered from the chain now keeps its settlement transaction.**
-  When the facilitator's reply was lost (a crash, a timeout), Latch learned
+  When the facilitator's reply was lost (a crash, a timeout), Detent learned
   from `authorizationState` that the payment landed but not which transaction
   did it, so the report showed "—" and the receipt had no `settlementRef`.
   `eip3009Oracle` now has `findTransaction`, which finds the

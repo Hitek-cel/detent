@@ -16,7 +16,7 @@ import type { SqlClient, SqlExecutor } from "../adapters/postgres-journal.ts";
  *
  *     new AuthCaptureEvmScheme({ storage: postgresAuthorizedPaymentStorage(sql) })
  *
- * Latch takes no dependency on the SDK, so the record type is a parameter;
+ * Detent takes no dependency on the SDK, so the record type is a parameter;
  * pass the SDK's `AuthorizedPayment` for full typing.
  */
 
