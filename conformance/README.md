@@ -52,12 +52,15 @@ A normal x402 payment through Detent makes seven journal writes, in this order:
 
 ## What the vectors show
 
-Every row holds the control-10 invariant: at most one charge, at most one
-handler run, and a charge only where the payment ends `delivered`. The single
-exception is the case the spec reserves `stuck` for: the settle landed, the
-server died before recording anything about it, and the rail cannot be read.
-That payment stays blocked, retries get `409` with `Retry-After` while it might
-still resolve, and an operator is alarmed.
+Every row holds the control-10 safety invariants: at most one charge, at most
+one handler run, and every charge backed by a stored response. Every row also
+ends in one of the three states control 10 allows (spec 0.10): `delivered`,
+`void` (only where no settle was sent or the chain shows the payment can no
+longer land), or `stuck`. Detent's only `stuck` row is the case the spec
+reserves it for: the settle landed, the server died before recording anything
+about it, and the rail cannot be read. That payment stays blocked, retries get
+`409` with `Retry-After` while it might still resolve, and an operator is
+alarmed.
 
 A fresh `402` appears only where nothing moved and the payment ends `void`:
 the server died before its `settling` marker, so the stale claim was closed.
